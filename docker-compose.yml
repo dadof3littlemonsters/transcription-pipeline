@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: transcription-pipeline:latest
+    container_name: transcription-pipeline
+    ports:
+      - "8888:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./processing:/app/processing
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./frontend/dist:/app/frontend/dist
+    environment:
+      - API_KEY=${API_KEY:-change-me-in-production}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ZAI_API_KEY=${ZAI_API_KEY:-}
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SYNCTHING_URL=${SYNCTHING_URL:-http://syncthing:8384}
+      - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
+      - PIPELINE_API_KEY=${PIPELINE_API_KEY:-}
+      - LOG_FORMAT=${LOG_FORMAT:-}
+      - HOST=0.0.0.0
+      - PORT=8000
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: transcription-redis
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: transcription-pipeline:latest
+    container_name: transcription-worker
+    command: python src/worker.py
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./processing:/app/processing
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./.cache:/app/.cache
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ZAI_API_KEY=${ZAI_API_KEY:-}
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
+      - HF_HOME=/app/.cache/huggingface
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - KATE_EMAIL=${KATE_EMAIL:-}
+      - KEIRA_EMAIL=${KEIRA_EMAIL:-}
+      - KEIRA_COHORT_EMAIL=${KEIRA_COHORT_EMAIL:-}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+
+volumes:
+  redis_data:

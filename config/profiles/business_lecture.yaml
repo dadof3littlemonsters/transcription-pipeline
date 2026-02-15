@@ -1,0 +1,35 @@
+name: business_lecture
+skip_diarization: true
+stages:
+  - name: clean
+    prompt_file: business/clean.md
+    system_message: "You are a professional academic transcription editor specializing in business."
+    filename_suffix: "_clean"
+    save_intermediate: true
+    model: deepseek-chat
+    temperature: 0.3
+
+  - name: analyze
+    prompt_file: business/analyze.md
+    system_message: "You are a UK business school academic assistant."
+    filename_suffix: "_analysis"
+    save_intermediate: true
+    model: deepseek-reasoner
+    temperature: 0.3
+
+  - name: qa_verify
+    prompt_file: business/qa_verify.md
+    system_message: "You are a QA specialist for academic transcripts."
+    filename_suffix: "_verified"
+    save_intermediate: true
+    model: deepseek-chat
+    temperature: 0.2
+    requires_previous: true
+
+  - name: cheat_sheet
+    prompt_file: business/cheat_sheet.md
+    system_message: "You are a revision aid specialist."
+    filename_suffix: "_cheatsheet"
+    save_intermediate: true
+    model: deepseek-chat
+    temperature: 0.3

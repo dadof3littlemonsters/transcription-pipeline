@@ -1,0 +1,43 @@
+name: social_work_lecture
+skip_diarization: true
+stages:
+  - name: pre_filter
+    prompt_file: social_work/pre_filter.md
+    system_message: "You are a helpful assistant that filters transcripts."
+    filename_suffix: "_filtered"
+    save_intermediate: true
+    model: deepseek-chat
+    temperature: 0.3
+
+  - name: clean
+    prompt_file: social_work/clean.md
+    system_message: "You are a professional academic transcription editor."
+    filename_suffix: "_clean"
+    save_intermediate: true
+    model: deepseek-chat
+    temperature: 0.3
+
+  - name: analyze
+    prompt_file: social_work/analyze.md
+    system_message: "You are a UK social work academic assistant."
+    filename_suffix: "_analysis"
+    save_intermediate: true
+    model: deepseek-reasoner
+    temperature: 0.3
+
+  - name: qa_verify
+    prompt_file: social_work/qa_verify.md
+    system_message: "You are a QA specialist for academic transcripts."
+    filename_suffix: "_verified"
+    save_intermediate: true
+    model: deepseek-chat
+    temperature: 0.2
+    requires_previous: true 
+
+  - name: cheat_sheet
+    prompt_file: social_work/cheat_sheet.md
+    system_message: "You are a revision aid specialist."
+    filename_suffix: "_cheatsheet"
+    save_intermediate: true
+    model: deepseek-chat
+    temperature: 0.3

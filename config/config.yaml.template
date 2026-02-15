@@ -1,0 +1,574 @@
+# Transcription Pipeline Configuration Template
+# Copy this file to config.yaml and customize for your environment
+
+# =============================================================================
+# UPLOAD SETTINGS
+# =============================================================================
+upload:
+  # Directory where uploaded files are stored
+  directory: "/app/uploads"
+  
+  # Allowed file formats (extensions without dot)
+  allowed_formats:
+    - "mp3"
+    - "wav"
+    - "mp4"
+    - "m4a"
+    - "flac"
+    - "ogg"
+    - "webm"
+    - "mov"
+    - "avi"
+  
+  # Maximum file size (e.g., 100MB, 1GB)
+  max_file_size: "500MB"
+  
+  # How long to keep uploaded files (days, 0 = forever)
+  retention_days: 7
+  
+  # Virus scanning (optional, requires clamav)
+  virus_scan: false
+
+# =============================================================================
+# PROCESSING SETTINGS
+# =============================================================================
+processing:
+  # Transcription engine: whisper, aws, google, azure, custom
+  engine: "whisper"
+  
+  # Whisper-specific settings (when engine is whisper)
+  whisper:
+    # Model size: tiny, base, small, medium, large, large-v2, large-v3
+    model: "base"
+    
+    # Device: cpu, cuda, auto
+    device: "cpu"
+    
+    # Compute type: int8, float16, float32
+    compute_type: "int8"
+    
+    # Language code (auto for auto-detect)
+    language: "auto"
+    
+    # Task: transcribe, translate
+    task: "transcribe"
+    
+    # Beam size for decoding
+    beam_size: 5
+    
+    # Best of for sampling
+    best_of: 5
+    
+    # Temperature for sampling
+    temperature: 0.0
+    
+    # Compression ratio threshold
+    compression_ratio_threshold: 2.4
+    
+    # Logprob threshold
+    logprob_threshold: -1.0
+    
+    # No speech threshold
+    no_speech_threshold: 0.6
+    
+    # Condition on previous text
+    condition_on_previous_text: true
+    
+    # Initial prompt
+    initial_prompt: ""
+    
+    # Suppress tokens
+    suppress_tokens: "-1"
+    
+    # Without timestamps
+    without_timestamps: false
+    
+    # Max initial timestamp
+    max_initial_timestamp: 1.0
+    
+    # Word-level timestamps
+    word_timestamps: false
+    
+    # Prepend punctuation
+    prepend_punctuations: "\"'\"¿([{-"
+    
+    # Append punctuation
+    append_punctuations: "\"'.。,，!！?？:：")]}、"
+    
+    # Highlight words (for VTT)
+    highlight_words: false
+    
+    # Max line count for subtitles
+    max_line_count: 1
+    
+    # Max line width for subtitles
+    max_line_width: 42
+    
+    # Max words per line
+    max_words_per_line: 7
+    
+    # VAD filter (voice activity detection)
+    vad_filter: false
+    
+    # VAD parameters
+    vad_parameters:
+      threshold: 0.5
+      min_speech_duration_ms: 250
+      max_speech_duration_s: 9999999999999
+      min_silence_duration_ms: 2000
+      speech_pad_ms: 400
+  
+  # AWS Transcribe settings (when engine is aws)
+  aws:
+    region: "${AWS_REGION}"
+    access_key_id: "${AWS_ACCESS_KEY_ID}"
+    secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+    
+    # Additional AWS-specific options
+    settings:
+      vocabulary_name: ""
+      vocabulary_filter_name: ""
+      vocabulary_filter_method: "mask"  # mask, remove, tag
+      show_speaker_labels: false
+      max_speaker_labels: 10
+      channel_identification: false
+      show_alternatives: false
+      max_alternatives: 2
+  
+  # Google Speech-to-Text settings (when engine is google)
+  google:
+    credentials_path: "${GOOGLE_APPLICATION_CREDENTIALS}"
+    
+    # Additional Google-specific options
+    settings:
+      model: "default"  # default, video, phone_call, command_and_search, latest_long, latest_short
+      use_enhanced: true
+      enable_automatic_punctuation: true
+      enable_speaker_diarization: false
+      diarization_speaker_count: 2
+      enable_word_confidence: true
+      enable_word_time_offsets: true
+      max_alternatives: 1
+      profanity_filter: false
+  
+  # Azure Speech Service settings (when engine is azure)
+  azure:
+    subscription_key: "${AZURE_SPEECH_KEY}"
+    region: "${AZURE_SPEECH_REGION}"
+    
+    # Additional Azure-specific options
+    settings:
+      speech_recognition_language: "en-US"
+      enable_dictation: false
+      profanity_option: "Masked"
+      enable_audio_logging: false
+  
+  # Custom API settings (when engine is custom)
+  custom:
+    endpoint_url: "${CUSTOM_API_ENDPOINT}"
+    api_key: "${CUSTOM_API_KEY}"
+    
+    # Request/response format configuration
+    format:
+      request_type: "multipart"  # json, multipart
+      audio_field: "audio"
+      language_field: "language"
+      response_type: "json"  # json, text
+      text_field: "text"
+      segments_field: "segments"
+
+# =============================================================================
+# QUEUE & WORKER SETTINGS
+# =============================================================================
+queue:
+  # Queue backend: redis, memory, filesystem
+  backend: "redis"
+  
+  # Redis configuration
+  redis:
+    host: "${REDIS_HOST:-redis}"
+    port: ${REDIS_PORT:-6379}
+    db: ${REDIS_DB:-0}
+    password: "${REDIS_PASSWORD}"
+    ssl: false
+    socket_timeout: 30
+    socket_connect_timeout: 30
+  
+  # Worker configuration
+  workers:
+    # Number of concurrent worker processes
+    count: 4
+    
+    # Maximum jobs per worker before restart
+    max_jobs: 100
+    
+    # Job timeout in seconds
+    job_timeout: 3600
+    
+    # Result TTL in seconds
+    result_ttl: 86400
+    
+    # Failure TTL in seconds
+    failure_ttl: 604800
+
+# =============================================================================
+# API CONFIGURATION
+# =============================================================================
+api:
+  # Server bind address
+  host: "0.0.0.0"
+  
+  # Server port
+  port: 8000
+  
+  # Debug mode (enable for development only)
+  debug: false
+  
+  # API authentication
+  auth:
+    # Authentication type: none, api_key, jwt
+    type: "api_key"
+    
+    # API key (set via environment variable)
+    api_key: "${API_KEY}"
+    
+    # JWT secret (if using JWT auth)
+    jwt_secret: "${JWT_SECRET}"
+    
+    # JWT expiration in minutes
+    jwt_expiration: 60
+  
+  # CORS settings
+  cors:
+    enabled: true
+    allow_origins: ["*"]
+    allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_headers: ["*"]
+    allow_credentials: false
+    max_age: 600
+  
+  # Rate limiting
+  rate_limit:
+    enabled: true
+    
+    # Requests per minute
+    requests_per_minute: 60
+    
+    # Burst size
+    burst_size: 10
+    
+    # Rate limit by: ip, api_key, global
+    limit_by: "api_key"
+  
+  # Request size limits
+  limits:
+    max_content_length: "1GB"
+    max_form_memory_size: "100MB"
+  
+  # Request timeout
+  timeout: 300
+
+# =============================================================================
+# OUTPUT SETTINGS
+# =============================================================================
+output:
+  # Output directory
+  directory: "/app/output"
+  
+  # Output formats
+  formats:
+    - "json"      # Full JSON with metadata and segments
+    - "srt"       # SubRip subtitle format
+    - "vtt"       # WebVTT subtitle format
+    - "txt"       # Plain text
+    - "csv"       # CSV format
+  
+  # Default format (when not specified)
+  default_format: "json"
+  
+  # Subtitle formatting (for SRT/VTT)
+  subtitle:
+    # Maximum characters per line
+    max_length: 42
+    
+    # Maximum lines per subtitle
+    max_lines: 2
+    
+    # Minimum subtitle duration (seconds)
+    min_duration: 1.0
+    
+    # Maximum subtitle duration (seconds)
+    max_duration: 7.0
+    
+    # Subtitle gap (seconds)
+    gap: 0.1
+    
+    # Break lines at punctuation
+    break_at_punctuation: true
+    
+    # Combine short subtitles
+    combine_short: true
+    
+    # Minimum combined duration
+    min_combine_duration: 0.5
+  
+  # JSON output options
+  json:
+    # Include word-level timestamps
+    include_words: true
+    
+    # Include confidence scores
+    include_confidence: true
+    
+    # Pretty print JSON
+    pretty: false
+    
+    # Include metadata
+    include_metadata: true
+  
+  # Text output options
+  text:
+    # Include timestamps
+    timestamps: false
+    
+    # Timestamp format: seconds, hms, none
+    timestamp_format: "none"
+    
+    # Include speaker labels
+    speakers: false
+    
+    # Paragraph break duration (seconds, 0 = no paragraphs)
+    paragraph_break: 0
+  
+  # Output retention
+  retention:
+    # Keep output files for X days (0 = forever)
+    days: 30
+    
+    # Archive old files instead of deleting
+    archive: false
+    archive_directory: "/app/archive"
+
+# =============================================================================
+# AUDIO PROCESSING SETTINGS
+# =============================================================================
+audio:
+  # Preprocessing settings
+  preprocessing:
+    # Convert to standard format
+    normalize: true
+    
+    # Target sample rate (Hz)
+    sample_rate: 16000
+    
+    # Target channels (1 = mono, 2 = stereo)
+    channels: 1
+    
+    # Target format
+    format: "wav"
+    
+    # Audio codec
+    codec: "pcm_s16le"
+    
+    # Normalize audio levels
+    normalize_volume: true
+    target_db: -20
+    
+    # Remove silence
+    remove_silence: false
+    silence_threshold: -50
+    min_silence_duration: 0.5
+    
+    # Noise reduction
+    noise_reduction: false
+    noise_reduction_strength: 0.5
+  
+  # Chunking for long files
+  chunking:
+    # Enable chunking
+    enabled: true
+    
+    # Chunk duration in seconds
+    duration: 300
+    
+    # Overlap between chunks in seconds
+    overlap: 1.0
+    
+    # Minimum chunk duration
+    min_duration: 10
+
+# =============================================================================
+# NOTIFICATION SETTINGS
+# =============================================================================
+notifications:
+  # Enable notifications
+  enabled: false
+  
+  # Webhook URL for notifications
+  webhook_url: "${WEBHOOK_URL}"
+  
+  # Webhook secret for HMAC verification
+  webhook_secret: "${WEBHOOK_SECRET}"
+  
+  # Events to notify on
+  events:
+    on_job_start: false
+    on_job_complete: true
+    on_job_failure: true
+    on_queue_full: false
+  
+  # Retry settings
+  retry:
+    max_retries: 3
+    retry_delay: 5
+  
+  # Email notifications (optional)
+  email:
+    enabled: false
+    smtp_host: "${SMTP_HOST}"
+    smtp_port: ${SMTP_PORT:-587}
+    smtp_user: "${SMTP_USER}"
+    smtp_password: "${SMTP_PASSWORD}"
+    use_tls: true
+    from_address: "transcription@example.com"
+    to_addresses: []
+
+# =============================================================================
+# LOGGING SETTINGS
+# =============================================================================
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  
+  # Log file path
+  file: "/app/logs/pipeline.log"
+  
+  # Maximum log file size
+  max_size: "100MB"
+  
+  # Number of backup files to keep
+  backup_count: 5
+  
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # Date format
+  date_format: "%Y-%m-%d %H:%M:%S"
+  
+  # Console output
+  console: true
+  
+  # JSON logging (for structured logging)
+  json: false
+  
+  # Request logging
+  request_logging: true
+  
+  # Performance metrics logging
+  metrics_logging: true
+
+# =============================================================================
+# MONITORING & METRICS
+# =============================================================================
+monitoring:
+  # Enable metrics endpoint
+  enabled: false
+  
+  # Metrics endpoint path
+  path: "/metrics"
+  
+  # Prometheus format
+  prometheus_format: true
+  
+  # System metrics
+  system_metrics: true
+  
+  # Application metrics
+  app_metrics: true
+  
+  # Health check endpoint
+  health_check:
+    enabled: true
+    path: "/health"
+
+# =============================================================================
+# STORAGE SETTINGS
+# =============================================================================
+storage:
+  # Storage backend: local, s3, gcs, azure
+  backend: "local"
+  
+  # S3 settings (when backend is s3)
+  s3:
+    bucket: "${S3_BUCKET}"
+    region: "${S3_REGION}"
+    access_key_id: "${S3_ACCESS_KEY_ID}"
+    secret_access_key: "${S3_SECRET_ACCESS_KEY}"
+    endpoint_url: "${S3_ENDPOINT_URL}"  # For MinIO, etc.
+    prefix: "transcriptions/"
+  
+  # Google Cloud Storage settings (when backend is gcs)
+  gcs:
+    bucket: "${GCS_BUCKET}"
+    credentials_path: "${GOOGLE_APPLICATION_CREDENTIALS}"
+    prefix: "transcriptions/"
+  
+  # Azure Blob Storage settings (when backend is azure)
+  azure:
+    container: "${AZURE_CONTAINER}"
+    connection_string: "${AZURE_STORAGE_CONNECTION_STRING}"
+    prefix: "transcriptions/"
+
+# =============================================================================
+# SECURITY SETTINGS
+# =============================================================================
+security:
+  # Enable HTTPS
+  https:
+    enabled: false
+    cert_file: "/app/certs/server.crt"
+    key_file: "/app/certs/server.key"
+  
+  # Content Security Policy
+  csp:
+    enabled: true
+    default_src: "'self'"
+    script_src: "'self'"
+    style_src: "'self' 'unsafe-inline'"
+    img_src: "'self' data:"
+    connect_src: "'self'"
+    font_src: "'self'"
+    object_src: "'none'"
+    frame_ancestors: "'none'"
+    base_uri: "'self'"
+    form_action: "'self'"
+  
+  # Request validation
+  validation:
+    validate_content_type: true
+    validate_filename: true
+    max_filename_length: 255
+    allowed_characters: "a-zA-Z0-9._-"
+
+# =============================================================================
+# PERFORMANCE SETTINGS
+# =============================================================================
+performance:
+  # Cache settings
+  cache:
+    enabled: true
+    backend: "memory"  # memory, redis
+    ttl: 3600
+    max_size: 100MB
+  
+  # Connection pooling
+  connection_pool:
+    max_connections: 100
+    max_keepalive: 20
+    keepalive_expiry: 5
+  
+  # Compression
+  compression:
+    enabled: true
+    minimum_size: 1000
+    level: 6
