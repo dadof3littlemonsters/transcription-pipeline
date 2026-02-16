@@ -7,6 +7,7 @@ async function apiFetch(path, options = {}) {
   if (API_KEY) {
     options.headers = { ...options.headers, "X-API-Key": API_KEY };
   }
+  options.credentials = 'include';
   const res = await fetch(`${API_BASE}${path}`, options);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

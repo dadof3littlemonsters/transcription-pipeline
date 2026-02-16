@@ -22,6 +22,7 @@ async function apiFetch(path, options = {}) {
     options.headers = { ...options.headers, "X-API-Key": API_KEY };
     console.log(`Frontend: Added X-API-Key header`);
   }
+  options.credentials = 'include';
   const url = `${API_BASE}${path}`;
   console.log(`Frontend: Fetching URL: ${url}`);
   const res = await fetch(url, options);
