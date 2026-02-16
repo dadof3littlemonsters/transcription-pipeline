@@ -41,6 +41,11 @@ async def list_profiles(
     for profile_id in profile_loader._profiles.keys():
         profile = profile_loader.get_profile(profile_id)
         if profile:
+            has_notif = bool(getattr(profile, 'notifications', None) and (
+                profile.notifications.ntfy_topic or
+                profile.notifications.discord_webhook or
+                profile.notifications.pushover_user
+            ))
             profiles.append(ProfileResponse(
                 id=profile_id,
                 name=profile.name,
@@ -49,6 +54,8 @@ async def list_profiles(
                 stages=[stage.name for stage in profile.stages],
                 syncthing_folder=profile.syncthing.share_folder if profile.syncthing else None,
                 syncthing_subfolder=profile.syncthing.subfolder if profile.syncthing else None,
+                priority=getattr(profile, 'priority', 5),
+                has_notifications=has_notif,
             ))
     
     # Add standard note types (only if not already loaded as a profile)

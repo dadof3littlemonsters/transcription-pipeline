@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import LogConsole from "./LogConsole";
 
 // ─── Mock data for preview (replace with real API calls) ───
 // Note: Mock data is disabled (USE_MOCK = false). Using real API calls instead.
@@ -180,6 +181,54 @@ function StatusBadge({ status }) {
   );
 }
 
+// ─── Pipeline Stage Tracker ───
+function PipelineTracker({ job, profile }) {
+  const stageResults = job.stage_results || [];
+  if (stageResults.length === 0 && job.status !== "PROCESSING") return null;
+
+  const STAGE_STYLES = {
+    PENDING:  { color: "rgba(255,255,255,0.2)", bg: "rgba(255,255,255,0.03)", border: "rgba(255,255,255,0.04)", icon: "○" },
+    RUNNING:  { color: "#60a5fa", bg: "rgba(96,165,250,0.12)", border: "rgba(96,165,250,0.3)", icon: "◌" },
+    COMPLETE: { color: "#34d399", bg: "rgba(52,211,153,0.1)", border: "rgba(52,211,153,0.2)", icon: "✓" },
+    FAILED:   { color: "#f87171", bg: "rgba(248,113,113,0.1)", border: "rgba(248,113,113,0.2)", icon: "✗" },
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+      {stageResults.map((sr, i) => {
+        const s = STAGE_STYLES[sr.status] || STAGE_STYLES.PENDING;
+        const costStr = sr.cost_estimate > 0 ? ` · $${sr.cost_estimate.toFixed(4)}` : "";
+        const tokenStr = (sr.input_tokens || sr.output_tokens)
+          ? ` · ${((sr.input_tokens + sr.output_tokens) / 1000).toFixed(1)}k tok`
+          : "";
+        return (
+          <div key={sr.stage_id} style={{ display: "flex", alignItems: "center" }}>
+            <div
+              title={`${sr.stage_id}: ${sr.status}${sr.model_used ? ` (${sr.model_used})` : ""}${costStr}${tokenStr}${sr.error ? ` — ${sr.error}` : ""}`}
+              style={{
+                padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 500,
+                background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+                display: "flex", alignItems: "center", gap: 4, cursor: "default",
+              }}
+            >
+              <span style={{ fontSize: 9 }}>{s.icon}</span>
+              {sr.stage_id}
+            </div>
+            {i < stageResults.length - 1 && (
+              <span style={{ color: "rgba(255,255,255,0.1)", fontSize: 10, margin: "0 2px" }}>→</span>
+            )}
+          </div>
+        );
+      })}
+      {job.cost_estimate > 0 && (
+        <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginLeft: 4 }}>
+          ${job.cost_estimate.toFixed(4)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── Health Dot ───
 function HealthDot({ ok, label }) {
   return (
@@ -286,6 +335,17 @@ function ProfileCard({ profile, jobCount, activeCount, onClick, onDelete }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
             {profile.stage_count} stage{profile.stage_count !== 1 ? "s" : ""} · {jobCount} job{jobCount !== 1 ? "s" : ""}
+            {profile.syncthing_folder && (
+              <span style={{ color: "rgba(52,211,153,0.4)" }}> · ↗ synced</span>
+            )}
+            {profile.priority && profile.priority !== 5 && (
+              <span style={{ color: profile.priority <= 3 ? "rgba(251,191,36,0.5)" : "rgba(255,255,255,0.15)" }}>
+                {" "}· P{profile.priority}
+              </span>
+            )}
+            {profile.has_notifications && (
+              <span style={{ color: "rgba(255,255,255,0.15)" }}> · 🔔</span>
+            )}
           </span>
           <span style={{ color: colors.accent, display: "flex", opacity: hovered ? 1 : 0, transition: "opacity 0.2s" }}>
             {Icons.chevronRight}
@@ -349,10 +409,25 @@ function JobRow({ job, profiles, onClick, onDelete }) {
               <span style={{ color: "rgba(96,165,250,0.8)" }}> · {job.current_stage}</span>
             )}
           </div>
+          {(job.status === "PROCESSING" || job.stage_results?.length > 0) && (
+            <PipelineTracker job={job} profile={profile} />
+          )}
         </div>
       </div>
 
-      <StatusBadge status={job.status} />
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <StatusBadge status={job.status} />
+        {job.priority && job.priority !== 5 && (
+          <span style={{
+            fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 4,
+            background: job.priority <= 3 ? "rgba(251,191,36,0.1)" : "rgba(255,255,255,0.03)",
+            color: job.priority <= 3 ? "#fbbf24" : "rgba(255,255,255,0.2)",
+            border: `1px solid ${job.priority <= 3 ? "rgba(251,191,36,0.15)" : "rgba(255,255,255,0.03)"}`,
+          }}>
+            P{job.priority}
+          </span>
+        )}
+      </div>
 
       <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", minWidth: 50, textAlign: "right" }}>
         {job.cost_estimate > 0 ? `$${job.cost_estimate.toFixed(3)}` : "—"}
@@ -518,6 +593,31 @@ function CreateProfileModal({ onClose, onSave }) {
   const [icon, setIcon] = useState("mic");
   const [syncthingFolder, setSyncthingFolder] = useState("");
   const [syncthingSubfolder, setSyncthingSubfolder] = useState("");
+  const [syncthingFolders, setSyncthingFolders] = useState([]);
+  const [syncthingLoading, setSyncthingLoading] = useState(false);
+  const [syncthingConfigured, setSyncthingConfigured] = useState(false);
+
+  // Priority and Notifications
+  const [priority, setPriority] = useState(5);
+  const [ntfyTopic, setNtfyTopic] = useState("");
+  const [discordWebhook, setDiscordWebhook] = useState("");
+  const [pushoverUser, setPushoverUser] = useState("");
+  const [pushoverToken, setPushoverToken] = useState("");
+
+  // Fetch Syncthing folders on mount
+  useEffect(() => {
+    setSyncthingLoading(true);
+    apiFetch("/api/syncthing/folders")
+      .then(data => {
+        setSyncthingConfigured(data?.configured || false);
+        if (data?.folders) {
+          setSyncthingFolders(data.folders);
+        }
+      })
+      .catch(() => setSyncthingConfigured(false))
+      .finally(() => setSyncthingLoading(false));
+  }, []);
+
   const [stages, setStages] = useState([
     { name: "Clean & Format", model: "deepseek-chat", provider: "", temperature: 0.3, max_tokens: 4096, prompt: "" },
   ]);
@@ -573,8 +673,15 @@ function CreateProfileModal({ onClose, onSave }) {
       description,
       skip_diarization: skipDiarization,
       icon,
+      priority: priority,
       syncthing_folder: syncthingFolder || null,
       syncthing_subfolder: syncthingSubfolder || null,
+      notifications: (ntfyTopic || discordWebhook || pushoverUser) ? {
+        ntfy_topic: ntfyTopic || undefined,
+        discord_webhook: discordWebhook || undefined,
+        pushover_user: pushoverUser || undefined,
+        pushover_token: pushoverToken || undefined,
+      } : undefined,
       stages: stages.map((s, i) => ({
         name: s.name,
         model: s.model,
@@ -740,26 +847,137 @@ function CreateProfileModal({ onClose, onSave }) {
               </div>
 
               {/* Syncthing output routing */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div>
-                  <label style={labelStyle}>Syncthing Folder</label>
+              <div>
+                <label style={labelStyle}>Sync Output To</label>
+                {syncthingLoading ? (
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", padding: "8px 0" }}>
+                    Checking Syncthing...
+                  </div>
+                ) : !syncthingConfigured ? (
+                  <div style={{
+                    fontSize: 12, color: "rgba(255,255,255,0.25)", padding: "10px 14px",
+                    background: "rgba(255,255,255,0.02)", borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.04)",
+                  }}>
+                    Syncthing not configured — outputs will stay on the server in <code style={{ color: "#a5b4fc" }}>outputs/docs/</code>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <div>
+                        <select
+                          value={syncthingFolder}
+                          onChange={e => setSyncthingFolder(e.target.value)}
+                          style={{ ...inputStyle, cursor: "pointer" }}
+                        >
+                          <option value="" style={{ background: "#1a1a2e" }}>No sync (local only)</option>
+                          {syncthingFolders.map(f => (
+                            <option key={f.id} value={f.id} style={{ background: "#1a1a2e" }}>
+                              {f.label || f.id} {f.state === "syncing" ? " (syncing)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <input
+                          value={syncthingSubfolder}
+                          onChange={e => setSyncthingSubfolder(e.target.value)}
+                          placeholder="Subfolder (optional)"
+                          style={inputStyle}
+                          disabled={!syncthingFolder}
+                        />
+                      </div>
+                    </div>
+                    {syncthingFolder && (
+                      <div style={{
+                        fontSize: 11, color: "rgba(255,255,255,0.3)",
+                        display: "flex", alignItems: "center", gap: 6,
+                      }}>
+                        <span style={{ color: "#34d399" }}>↗</span>
+                        Output syncs to: <code style={{ color: "#a5b4fc" }}>
+                          {syncthingFolders.find(f => f.id === syncthingFolder)?.label || syncthingFolder}
+                          {syncthingSubfolder ? `/${syncthingSubfolder}` : ""}
+                        </code>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Priority */}
+              <div>
+                <label style={labelStyle}>Queue Priority</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <input
-                    value={syncthingFolder}
-                    onChange={e => setSyncthingFolder(e.target.value)}
-                    placeholder="e.g. keira-docs (optional)"
-                    style={inputStyle}
+                    type="range" min="1" max="10" value={priority}
+                    onChange={e => setPriority(parseInt(e.target.value))}
+                    style={{ flex: 1, accentColor: "#60a5fa" }}
                   />
-                </div>
-                <div>
-                  <label style={labelStyle}>Subfolder</label>
-                  <input
-                    value={syncthingSubfolder}
-                    onChange={e => setSyncthingSubfolder(e.target.value)}
-                    placeholder="e.g. lectures"
-                    style={inputStyle}
-                  />
+                  <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", minWidth: 60 }}>
+                    {priority <= 3 ? "High" : priority <= 7 ? "Normal" : "Low"} ({priority})
+                  </span>
                 </div>
               </div>
+
+              {/* Notifications */}
+              <div>
+                <label style={labelStyle}>Notifications (optional)</label>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <input
+                    value={ntfyTopic}
+                    onChange={e => setNtfyTopic(e.target.value)}
+                    placeholder="Ntfy topic (e.g. transcription-alerts)"
+                    style={inputStyle}
+                  />
+                  <input
+                    value={discordWebhook}
+                    onChange={e => setDiscordWebhook(e.target.value)}
+                    placeholder="Discord webhook URL"
+                    style={inputStyle}
+                  />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <input
+                      value={pushoverUser}
+                      onChange={e => setPushoverUser(e.target.value)}
+                      placeholder="Pushover user key"
+                      style={inputStyle}
+                    />
+                    <input
+                      value={pushoverToken}
+                      onChange={e => setPushoverToken(e.target.value)}
+                      placeholder="Pushover app token"
+                      style={inputStyle}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Output path preview */}
+              {name && (
+                <div style={{
+                  background: "rgba(255,255,255,0.02)",
+                  border: "1px solid rgba(255,255,255,0.04)",
+                  borderRadius: 8, padding: "10px 14px",
+                }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                    Pipeline Flow
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "rgba(255,255,255,0.4)", flexWrap: "wrap" }}>
+                    <code style={{ color: "#fbbf24", background: "rgba(251,191,36,0.08)", padding: "2px 6px", borderRadius: 4 }}>
+                      uploads/{profileId || autoId(name)}/
+                    </code>
+                    <span>→</span>
+                    <span style={{ color: "rgba(255,255,255,0.5)" }}>{stages.length} stage pipeline</span>
+                    <span>→</span>
+                    <code style={{ color: "#34d399", background: "rgba(52,211,153,0.08)", padding: "2px 6px", borderRadius: 4 }}>
+                      {syncthingFolder
+                        ? `${syncthingFolders.find(f => f.id === syncthingFolder)?.label || syncthingFolder}${syncthingSubfolder ? `/${syncthingSubfolder}` : ""}`
+                        : `outputs/docs/${syncthingSubfolder || profileId || autoId(name)}/`
+                      }
+                    </code>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -913,6 +1131,139 @@ function CreateProfileModal({ onClose, onSave }) {
   );
 }
 
+// ─── Dry Run Panel ───
+function DryRunPanel({ profileId, stageIndex, stageName, onClose }) {
+  const [transcript, setTranscript] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [jobs, setAvailableJobs] = useState([]);
+
+  useEffect(() => {
+    apiFetch("/api/jobs?status=COMPLETE&limit=10")
+      .then(data => setAvailableJobs(data?.jobs || []))
+      .catch(() => {});
+  }, []);
+
+  const runTest = async () => {
+    setLoading(true); setError(""); setResult(null);
+    try {
+      const body = { stage_index: stageIndex, max_chars: 3000 };
+      if (jobId) body.job_id = jobId;
+      else body.transcript = transcript;
+      
+      const data = await apiFetch(`/api/profiles/${profileId}/dry-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      background: "rgba(0,0,0,0.5)", position: "fixed", inset: 0, zIndex: 1100,
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }} onClick={onClose}>
+      <div style={{
+        background: "#12121f", borderRadius: 16, padding: 24, maxWidth: 700, width: "90%",
+        maxHeight: "80vh", overflow: "auto", border: "1px solid rgba(255,255,255,0.08)",
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h3 style={{ color: "rgba(255,255,255,0.8)", margin: 0, fontSize: 16 }}>
+            Dry Run: {stageName}
+          </h3>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: "rgba(255,255,255,0.3)", fontSize: 18, cursor: "pointer"
+          }}>✕</button>
+        </div>
+
+        {/* Input source */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", display: "block", marginBottom: 4 }}>
+            From a previous job:
+          </label>
+          <select
+            value={jobId}
+            onChange={e => { setJobId(e.target.value); if (e.target.value) setTranscript(""); }}
+            style={{
+              width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 8, color: "rgba(255,255,255,0.6)", fontSize: 12, padding: "6px 10px", outline: "none",
+            }}
+          >
+            <option value="" style={{ background: "#1a1a2e" }}>— Or paste text below —</option>
+            {jobs.map(j => (
+              <option key={j.id} value={j.id} style={{ background: "#1a1a2e" }}>
+                {j.filename?.split("/").pop()} ({j.profile_id})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {!jobId && (
+          <div style={{ marginBottom: 12 }}>
+            <textarea
+              value={transcript}
+              onChange={e => setTranscript(e.target.value)}
+              placeholder="Paste sample transcript here..."
+              rows={6}
+              style={{
+                width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 8, color: "rgba(255,255,255,0.6)", fontSize: 12, padding: 10, outline: "none",
+                fontFamily: "'JetBrains Mono', monospace", resize: "vertical",
+              }}
+            />
+          </div>
+        )}
+
+        <button
+          onClick={runTest}
+          disabled={loading || (!transcript && !jobId)}
+          style={{
+            background: loading ? "rgba(255,255,255,0.05)" : "rgba(96,165,250,0.15)",
+            border: "1px solid rgba(96,165,250,0.3)", borderRadius: 8,
+            padding: "8px 20px", color: "#60a5fa", fontSize: 13, fontWeight: 600,
+            cursor: loading ? "wait" : "pointer", marginBottom: 16,
+          }}
+        >
+          {loading ? "Running..." : "Test Stage"}
+        </button>
+
+        {error && (
+          <div style={{ color: "#f87171", fontSize: 12, marginBottom: 12, padding: 10, background: "rgba(248,113,113,0.05)", borderRadius: 8 }}>
+            {error}
+          </div>
+        )}
+
+        {result && (
+          <div>
+            <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 11, color: "rgba(255,255,255,0.4)" }}>
+              <span>Model: <strong style={{ color: "#a5b4fc" }}>{result.model}</strong></span>
+              <span>Provider: {result.provider}</span>
+              <span>Tokens: {((result.input_tokens + result.output_tokens) / 1000).toFixed(1)}k</span>
+              <span>Cost: <strong style={{ color: "#34d399" }}>${result.cost.toFixed(4)}</strong></span>
+            </div>
+            <pre style={{
+              background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+              borderRadius: 8, padding: 12, fontSize: 11, color: "rgba(255,255,255,0.6)",
+              whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto",
+              fontFamily: "'JetBrains Mono', monospace",
+            }}>
+              {result.output}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Profile Detail View ───
 function ProfileDetail({ profile, jobs, onBack }) {
   const colors = PROFILE_COLORS[profile.id] || PROFILE_COLORS.meeting;
@@ -921,8 +1272,20 @@ function ProfileDetail({ profile, jobs, onBack }) {
   const completedCount = profileJobs.filter(j => j.status === "COMPLETE").length;
   const totalCost = profileJobs.reduce((sum, j) => sum + (j.cost_estimate || 0), 0);
 
-  const [editingPrompt, setEditingPrompt] = useState(null); // { stageIndex, content, filename }
+  const [editingPrompt, setEditingPrompt] = useState(null);
   const [promptSaving, setPromptSaving] = useState(false);
+  const [syncDevices, setSyncDevices] = useState([]);
+  const [dryRunStage, setDryRunStage] = useState(null);
+
+  useEffect(() => {
+    if (profile.syncthing_folder) {
+      apiFetch(`/api/syncthing/folder/${profile.syncthing_folder}/devices`)
+        .then(data => {
+          if (data?.devices) setSyncDevices(data.devices);
+        })
+        .catch(() => {});
+    }
+  }, [profile.syncthing_folder]);
 
   const loadPrompt = async (stageIndex) => {
     try {
@@ -985,20 +1348,37 @@ function ProfileDetail({ profile, jobs, onBack }) {
           <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", margin: "4px 0 0" }}>
             {profile.description}
           </p>
-          {profile.syncthing_folder && (
-            <div style={{
-              display: "flex", alignItems: "center", gap: 8, marginTop: 8,
-              fontSize: 12, color: "rgba(255,255,255,0.5)",
-              background: "rgba(255,255,255,0.05)", padding: "4px 10px", borderRadius: 6,
-              width: "fit-content", border: "1px solid rgba(255,255,255,0.05)"
-            }}>
-              <span style={{ fontWeight: 500 }}>Syncthing:</span>
-              <code style={{ fontSize: 11, color: "#a5b4fc" }}>
-                {profile.syncthing_folder}
-                {profile.syncthing_subfolder ? ` / ${profile.syncthing_subfolder}` : ""}
+          {/* Pipeline flow summary */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8, marginTop: 10,
+            fontSize: 12, color: "rgba(255,255,255,0.4)",
+            background: "rgba(255,255,255,0.03)", padding: "8px 12px", borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.04)", flexWrap: "wrap",
+          }}>
+            <code style={{ color: "#fbbf24", fontSize: 11 }}>
+              uploads/{profile.id}/
+            </code>
+            <span style={{ color: "rgba(255,255,255,0.15)" }}>→</span>
+            <span>{profile.stages?.length || 0} stages</span>
+            <span style={{ color: "rgba(255,255,255,0.15)" }}>→</span>
+            {profile.syncthing_folder ? (
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <code style={{ color: "#34d399", fontSize: 11 }}>
+                  {profile.syncthing_folder}
+                  {profile.syncthing_subfolder ? `/${profile.syncthing_subfolder}` : ""}
+                </code>
+                {syncDevices.length > 0 && (
+                  <span style={{ color: "rgba(255,255,255,0.25)", fontSize: 11 }}>
+                    → {syncDevices.map(d => d.name).join(", ")}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <code style={{ color: "#a5b4fc", fontSize: 11 }}>
+                outputs/docs/{profile.syncthing_subfolder || profile.id}/
               </code>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
@@ -1054,6 +1434,16 @@ function ProfileDetail({ profile, jobs, onBack }) {
                   }}
                 >
                   Edit Prompt
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setDryRunStage({ index: i, name: stage }); }}
+                  style={{
+                    background: "rgba(96,165,250,0.08)", border: "1px solid rgba(96,165,250,0.2)",
+                    borderRadius: 6, padding: "2px 8px", fontSize: 10, color: "#60a5fa",
+                    cursor: "pointer", fontWeight: 500,
+                  }}
+                >
+                  Test
                 </button>
               </div>
               {i < (profile.stages?.length || 0) - 1 && (
@@ -1172,6 +1562,16 @@ function ProfileDetail({ profile, jobs, onBack }) {
           </div>
         </div>
       )}
+
+      {/* Dry Run Panel */}
+      {dryRunStage && (
+        <DryRunPanel
+          profileId={profile.id}
+          stageIndex={dryRunStage.index}
+          stageName={dryRunStage.name}
+          onClose={() => setDryRunStage(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1269,7 +1669,28 @@ export default function ControlHub() {
         try {
           const { event: evt, data } = JSON.parse(event.data);
           if (evt === "job_update") {
-            setJobs(prev => prev.map(j => j.id === data.job_id ? { ...j, ...data } : j));
+            setJobs(prev => prev.map(j => {
+              if (j.id !== data.job_id) return j;
+              const updated = { ...j, ...data };
+              // Merge stage detail into stage_results array
+              if (data.stage_detail) {
+                const sd = data.stage_detail;
+                const existing = (j.stage_results || []).slice();
+                const idx = existing.findIndex(sr => sr.stage_id === sd.stage_id);
+                const stageEntry = {
+                  stage_id: sd.stage_id,
+                  status: sd.stage_status,
+                  model_used: sd.model_used,
+                };
+                if (idx >= 0) {
+                  existing[idx] = { ...existing[idx], ...stageEntry };
+                } else {
+                  existing.push(stageEntry);
+                }
+                updated.stage_results = existing;
+              }
+              return updated;
+            }));
           }
         } catch (e) {
           console.warn("WS parse error:", e);
@@ -1599,6 +2020,9 @@ export default function ControlHub() {
           Transcription Pipeline · transcribe.delboysden.uk
         </footer>
       </div>
+
+      {/* Log Console */}
+      <LogConsole />
 
       {/* Global styles */}
       <style>{`

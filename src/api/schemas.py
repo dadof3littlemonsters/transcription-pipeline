@@ -13,16 +13,16 @@ class JobCreateRequest(BaseModel):
     profile_id: str = Field(..., description="Profile ID to use for processing")
     # Note: file is handled separately via UploadFile in the endpoint
 
-
 class StageResultResponse(BaseModel):
     """Response model for a single stage result."""
     stage_id: str
-    status: str  # PENDING, RUNNING, COMPLETE, FAILED
+    status: str
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     model_used: Optional[str] = None
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_estimate: float = 0.0
     error: Optional[str] = None
 
     class Config:
@@ -40,6 +40,7 @@ class JobResponse(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     cost_estimate: float
+    priority: int = 5
     outputs: Optional[List[Dict[str, str]]] = None
     stage_results: Optional[List[StageResultResponse]] = None
     
@@ -107,9 +108,11 @@ class ProfileResponse(BaseModel):
     name: str
     description: Optional[str] = None
     stage_count: int
-    stages: Optional[List[str]] = None  # Stage names
+    stages: Optional[List[str]] = None
     syncthing_folder: Optional[str] = None
     syncthing_subfolder: Optional[str] = None
+    priority: int = 5
+    has_notifications: bool = False
 
 
 class ProfileDetailResponse(BaseModel):
