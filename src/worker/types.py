@@ -26,6 +26,16 @@ class SyncthingConfig:
     subfolder: str = ""      # Optional subfolder within the share
 
 @dataclass
+class NotificationConfig:
+    """Notification configuration for a profile."""
+    ntfy_topic: str = ""
+    ntfy_url: str = ""  # Defaults to https://ntfy.sh
+    discord_webhook: str = ""
+    pushover_user: str = ""
+    pushover_token: str = ""
+
+
+@dataclass
 class DegreeProfile:
     """Defines a degree-specific processing profile."""
     name: str
@@ -33,3 +43,5 @@ class DegreeProfile:
     skip_diarization: bool = False
     description: str = ""
     syncthing: Optional[SyncthingConfig] = None
+    notifications: Optional[NotificationConfig] = None
+    priority: int = 5  # Default priority 1=highest, 10=lowest

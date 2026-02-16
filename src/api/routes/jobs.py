@@ -2,6 +2,7 @@
 Job management API routes.
 """
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -12,10 +13,12 @@ from slowapi.util import get_remote_address
 from sqlmodel import Session, select
 
 from src.api.models import Job, StageResult
-from src.api.schemas import JobCreateRequest, JobResponse, JobListResponse
+from src.api.schemas import JobCreateRequest, JobResponse, JobListResponse, StageResultResponse
 from src.api.dependencies import get_db_session, get_profile_loader, require_api_keys
 from src.api.upload import save_uploaded_file
 from src.worker.profile_loader import ProfileLoader
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
 limiter = Limiter(key_func=get_remote_address)
@@ -47,11 +50,17 @@ async def create_job(
     # Save uploaded file
     file_path = await save_uploaded_file(file, profile_id)
     
+    # Get priority from profile config
+    job_priority = 5  # Default
+    if profile:
+        job_priority = getattr(profile, 'priority', 5)
+    
     # Create job record
     job = Job(
         profile_id=profile_id,
         filename=str(file_path),
         status="QUEUED",
+        priority=job_priority,
     )
     
     session.add(job)
@@ -79,7 +88,7 @@ async def get_job(
     
     if job.status == "COMPLETE":
         # Look for output files
-        output_dir = Path("output")
+        output_dir = Path("outputs")
         job_stem = Path(job.filename).stem
         
         outputs = []
@@ -94,6 +103,64 @@ async def get_job(
         response.outputs = outputs
     
     return response
+
+
+@router.get("/{job_id}/outputs")
+async def get_job_outputs(
+    job_id: str,
+    session: Session = Depends(get_db_session),
+):
+    """Get list of actual output files for a job with file sizes and sync status."""
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    # Gather stage result output paths
+    stage_outputs = session.exec(
+        select(StageResult).where(StageResult.job_id == job_id)
+    ).all()
+    
+    files = []
+    
+    # Check intermediate stage files
+    for sr in stage_outputs:
+        if sr.output_path:
+            p = Path(sr.output_path)
+            if p.exists():
+                files.append({
+                    "path": str(p),
+                    "name": p.name,
+                    "type": "intermediate",
+                    "stage": sr.stage_id,
+                    "size_bytes": p.stat().st_size,
+                    "exists": True,
+                })
+    
+    # Check final output files
+    output_dir = Path("outputs")
+    job_stem = Path(job.filename).stem
+    
+    # Remove timestamp prefix for matching
+    import re
+    clean_stem = re.sub(r'^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_?', '', job_stem)
+    
+    for output_file in output_dir.rglob(f"*{clean_stem}*"):
+        if output_file.is_file():
+            files.append({
+                "path": str(output_file),
+                "name": output_file.name,
+                "type": output_file.suffix.lstrip("."),
+                "stage": "final",
+                "size_bytes": output_file.stat().st_size,
+                "exists": True,
+            })
+    
+    return {
+        "job_id": job_id,
+        "profile_id": job.profile_id,
+        "files": files,
+        "total_files": len(files),
+    }
 
 
 @router.get("", response_model=JobListResponse)
@@ -131,8 +198,19 @@ async def list_jobs(
     
     jobs = session.exec(statement).all()
     
+    job_responses = []
+    for job in jobs:
+        resp = JobResponse.from_orm(job)
+        # Include stage results for active/recent jobs
+        if job.status in ("PROCESSING", "QUEUED") or job.stage_results:
+            resp.stage_results = [
+                StageResultResponse.from_orm(sr)
+                for sr in sorted(job.stage_results, key=lambda s: s.started_at or datetime.min)
+            ]
+        job_responses.append(resp)
+    
     return JobListResponse(
-        jobs=[JobResponse.from_orm(job) for job in jobs],
+        jobs=job_responses,
         total=total,
         limit=limit,
         offset=offset,
@@ -142,12 +220,11 @@ async def list_jobs(
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_job(
     job_id: str,
+    force: bool = Query(False, description="Force delete - removes from DB regardless of status"),
     session: Session = Depends(get_db_session),
 ):
     """
-    Cancel or delete a job.
-    
-    If the job is QUEUED or PROCESSING, it will be marked as CANCELLED.
+    Delete a job permanently from the database.
     """
     job = session.get(Job, job_id)
     if not job:
@@ -156,15 +233,15 @@ async def delete_job(
             detail=f"Job {job_id} not found"
         )
     
-    # Only allow cancellation of queued/processing jobs
-    if job.status in ["QUEUED", "PROCESSING"]:
-        job.status = "CANCELLED"
-        job.error = "Cancelled by user"
-        session.add(job)
-        session.commit()
-    elif job.status in ["COMPLETE", "FAILED"]:
-        # For completed/failed jobs, just delete the record
-        session.delete(job)
-        session.commit()
+    # Delete associated stage results first (foreign key constraint)
+    stage_results = session.exec(
+        select(StageResult).where(StageResult.job_id == job_id)
+    ).all()
+    for sr in stage_results:
+        session.delete(sr)
+    
+    # Delete the job itself
+    session.delete(job)
+    session.commit()
     
     return None

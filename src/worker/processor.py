@@ -109,17 +109,21 @@ class JobProcessor:
             else:
                 logger.info(f"Provider not configured: {name}")
 
-    def _publish_status(self, job: Job):
+    def _publish_status(self, job: Job, stage_detail: dict = None):
         """Publish job status update to Redis for WebSocket broadcasting."""
         if not self._redis:
             return
         try:
-            self._redis.publish("job_updates", json.dumps({
+            payload = {
                 "job_id": job.id,
                 "status": job.status,
                 "current_stage": job.current_stage,
                 "error": job.error,
-            }))
+                "cost_estimate": job.cost_estimate,
+            }
+            if stage_detail:
+                payload["stage_detail"] = stage_detail
+            self._redis.publish("job_updates", json.dumps(payload))
         except Exception as e:
             logger.warning(f"Failed to publish status update: {e}")
 
@@ -233,7 +237,11 @@ class JobProcessor:
         job.current_stage = stage_id
         session.add(job)
         session.commit()
-        self._publish_status(job)
+        self._publish_status(job, stage_detail={
+            "stage_id": stage_id,
+            "stage_status": status,
+            "model_used": kwargs.get("model_used"),
+        })
         return stage_result
 
     def _run_job(self, session: Session, job: Job):
@@ -337,7 +345,7 @@ class JobProcessor:
         profile_id: str,
         result: Dict
     ):
-        """Process using multi-stage formatter."""
+        """Process using multi-stage formatter with per-stage tracking and resume."""
         logger.info(f"Processing with profile: {profile_id}")
         
         whisper_segments = transcript_data["segments"]
@@ -347,36 +355,117 @@ class JobProcessor:
         # Build raw transcript
         raw_transcript = self._build_raw_transcript(whisper_segments)
         
-        # Multi-stage formatting
-        self._record_stage(session, job, "formatting", "RUNNING")
+        # Get the profile and its stages
+        profile = self.profile_loader.get_profile(profile_id)
+        if not profile:
+            raise ValueError(f"Profile not found: {profile_id}")
         
-        multi_formatter = self._get_multi_stage_formatter(profile_id)
+        from .providers import resolve_provider
+        from .pricing import estimate_cost
         
-        stage_results = multi_formatter.process_transcript(
-            transcript=raw_transcript,
-            metadata={
-                "filename": audio_path.name,
-                "duration": duration,
-            }
-        )
+        current_input = raw_transcript
+        previous_outputs = {}
+        stage_results_data = {}
+        total_cost = 0.0
         
-        # Update cost from token usage
-        total_input = stage_results.get("_total_input_tokens", 0)
-        total_output = stage_results.get("_total_output_tokens", 0)
-        if total_input or total_output:
-            from .pricing import estimate_cost
-            # Use the last stage's model for pricing (rough estimate for multi-model)
-            last_stage_model = self.profile_loader.get_profile(profile_id).stages[-1].model if self.profile_loader.get_profile(profile_id) else "deepseek-chat"
-            job.cost_estimate = estimate_cost(last_stage_model, total_input, total_output)
-            session.add(job)
-            session.commit()
+        # Process each stage individually with resume support
+        for i, stage in enumerate(profile.stages):
+            stage_id = stage.name
+            
+            # Check if this stage was already completed (resume support)
+            cached = self._get_stage_result(session, job.id, stage_id)
+            if cached and cached.output_path:
+                cached_path = Path(cached.output_path)
+                if cached_path.exists():
+                    logger.info(f"Resuming: Stage '{stage_id}' already complete, loading cached output")
+                    try:
+                        current_input = cached_path.read_text(encoding="utf-8")
+                        previous_outputs[stage_id] = current_input
+                        stage_results_data[stage_id] = current_input
+                        total_cost += cached.cost_estimate or 0.0
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Failed to load cached stage output: {e}. Re-running stage.")
+            
+            # Record stage as RUNNING
+            self._record_stage(session, job, stage_id, "RUNNING", model_used=stage.model)
+            
+            try:
+                # Resolve provider
+                provider_config = resolve_provider(stage.model, stage.provider or None)
+                
+                # Build prompt
+                prompt_kwargs = {"transcript": current_input}
+                if "{cleaned_transcript}" in stage.prompt_template and "clean" in previous_outputs:
+                    prompt_kwargs["cleaned_transcript"] = previous_outputs.get("clean", current_input)
+                elif "{cleaned_transcript}" in stage.prompt_template:
+                    prompt_kwargs["cleaned_transcript"] = current_input
+                
+                prompt = stage.prompt_template.format(**prompt_kwargs)
+                
+                # Call LLM using the formatter's _call_api
+                multi_formatter = self._get_multi_stage_formatter(profile_id)
+                output, usage_info = multi_formatter._call_api(
+                    prompt=prompt,
+                    system_message=stage.system_message,
+                    model=stage.model,
+                    temperature=stage.temperature,
+                    max_tokens=stage.max_tokens,
+                    timeout=stage.timeout,
+                    provider_config=provider_config,
+                )
+                
+                # Calculate per-stage cost
+                input_tokens = usage_info.get("input_tokens", 0)
+                output_tokens = usage_info.get("output_tokens", 0)
+                stage_cost = estimate_cost(stage.model, input_tokens, output_tokens)
+                total_cost += stage_cost
+                
+                # Save intermediate output for resume
+                job_data_dir = self.processing_dir / "job_data" / job.id
+                job_data_dir.mkdir(parents=True, exist_ok=True)
+                stage_output_path = job_data_dir / f"stage_{stage_id}.txt"
+                stage_output_path.write_text(output, encoding="utf-8")
+                
+                # Record stage as COMPLETE with full metrics
+                self._record_stage(
+                    session, job, stage_id, "COMPLETE",
+                    model_used=stage.model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_estimate=stage_cost,
+                    output_path=str(stage_output_path),
+                )
+                
+                # Update for next stage
+                current_input = output
+                previous_outputs[stage_id] = output
+                stage_results_data[stage_id] = output
+                
+                logger.info(f"  Stage '{stage_id}' complete ({len(output)} chars, ${stage_cost:.6f})")
+                
+            except Exception as e:
+                logger.error(f"  Stage '{stage_id}' failed: {e}")
+                self._record_stage(session, job, stage_id, "FAILED", error=str(e), model_used=stage.model)
+                raise  # Fail the job — on next run it will resume from this stage
         
-        self._record_stage(session, job, "formatting", "COMPLETE")
+        # Update total cost
+        job.cost_estimate = total_cost
+        session.add(job)
+        session.commit()
         
         # Output Generation
         self._record_stage(session, job, "output", "RUNNING")
         
-        stage_outputs = multi_formatter.get_stage_outputs(stage_results)
+        # Build stage outputs for file generation
+        stage_outputs = []
+        for stage in profile.stages:
+            if stage.name in stage_results_data and stage.save_intermediate:
+                stage_outputs.append({
+                    "stage": stage.name,
+                    "suffix": stage.filename_suffix,
+                    "content": stage_results_data[stage.name],
+                })
         
         metadata = {
             "duration": duration,
@@ -384,11 +473,8 @@ class JobProcessor:
             "profile": profile_id,
         }
         
-        # Syncthing subdirs — use profile config instead of hardcoded values
-        profile = self.profile_loader.get_profile(profile_id)
         syncthing = getattr(profile, 'syncthing', None)
         user_subdir = syncthing.subfolder if syncthing else None
-        
         docs_dir = self.output_generator.get_user_docs_dir(user_subdir)
         
         all_outputs = []
@@ -408,8 +494,8 @@ class JobProcessor:
         
         self._record_stage(session, job, "output", "COMPLETE")
         
-        # Email
-        self._send_email(profile_id, audio_path.stem, all_outputs)
+        # Notifications
+        self._send_notifications(profile_id, profile, audio_path.stem, all_outputs, total_cost)
 
     def _process_standard(
         self,
@@ -498,6 +584,80 @@ class JobProcessor:
                 user_name=user_name,
                 cc_email=cc_email
             )
+
+    def _send_notifications(self, profile_id: str, profile, lecture_name: str, outputs: list, total_cost: float = 0.0):
+        """Send all configured notifications for a completed job."""
+        # Email (existing)
+        self._send_email(profile_id, lecture_name, outputs)
+        
+        # Webhook notifications (Ntfy, Discord, Pushover)
+        notification_config = getattr(profile, 'notifications', None)
+        if not notification_config:
+            return
+        
+        output_names = [Path(o.get("path", "")).name for o in outputs if o.get("type") == "docx"]
+        summary = f"Pipeline complete: {lecture_name} ({len(output_names)} files, ${total_cost:.4f})"
+        
+        # Ntfy
+        ntfy_topic = getattr(notification_config, 'ntfy_topic', None)
+        ntfy_url = getattr(notification_config, 'ntfy_url', None) or os.getenv("NTFY_URL", "https://ntfy.sh")
+        if ntfy_topic:
+            try:
+                import requests as req
+                req.post(
+                    f"{ntfy_url}/{ntfy_topic}",
+                    data=summary,
+                    headers={
+                        "Title": f"Transcription: {lecture_name}",
+                        "Priority": "default",
+                        "Tags": "white_check_mark",
+                    },
+                    timeout=10,
+                )
+                logger.info(f"Ntfy notification sent to topic: {ntfy_topic}")
+            except Exception as e:
+                logger.warning(f"Ntfy notification failed: {e}")
+        
+        # Discord
+        discord_webhook = getattr(notification_config, 'discord_webhook', None) or os.getenv("DISCORD_WEBHOOK_URL")
+        if discord_webhook:
+            try:
+                import requests as req
+                req.post(
+                    discord_webhook,
+                    json={
+                        "content": summary,
+                        "embeds": [{
+                            "title": f"Transcription Complete",
+                            "description": f"**{lecture_name}**\nProfile: {profile_id}\nCost: ${total_cost:.4f}\nFiles: {', '.join(output_names)}",
+                            "color": 3066993,  # Green
+                        }]
+                    },
+                    timeout=10,
+                )
+                logger.info("Discord notification sent")
+            except Exception as e:
+                logger.warning(f"Discord notification failed: {e}")
+        
+        # Pushover
+        pushover_user = getattr(notification_config, 'pushover_user', None) or os.getenv("PUSHOVER_USER_KEY")
+        pushover_token = getattr(notification_config, 'pushover_token', None) or os.getenv("PUSHOVER_APP_TOKEN")
+        if pushover_user and pushover_token:
+            try:
+                import requests as req
+                req.post(
+                    "https://api.pushover.net/1/messages.json",
+                    data={
+                        "token": pushover_token,
+                        "user": pushover_user,
+                        "title": f"Transcription: {lecture_name}",
+                        "message": summary,
+                    },
+                    timeout=10,
+                )
+                logger.info("Pushover notification sent")
+            except Exception as e:
+                logger.warning(f"Pushover notification failed: {e}")
 
     def _safe_archive(self, audio_path: Path, result: Dict) -> None:
         """Safely archive or delete."""

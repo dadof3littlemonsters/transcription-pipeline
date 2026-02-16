@@ -20,6 +20,7 @@ class Job(SQLModel, table=True):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     cost_estimate: float = 0.0
+    priority: int = Field(default=5, index=True)  # 1=highest, 10=lowest
     
     # Relationship
     stage_results: List["StageResult"] = Relationship(back_populates="job")
@@ -34,6 +35,7 @@ class StageResult(SQLModel, table=True):
     input_tokens: int = 0
     output_tokens: int = 0
     model_used: Optional[str] = None
+    cost_estimate: float = 0.0
     output_path: Optional[str] = None
     error: Optional[str] = None
     

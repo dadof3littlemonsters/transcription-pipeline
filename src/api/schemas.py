@@ -14,6 +14,21 @@ class JobCreateRequest(BaseModel):
     # Note: file is handled separately via UploadFile in the endpoint
 
 
+class StageResultResponse(BaseModel):
+    """Response model for a single stage result."""
+    stage_id: str
+    status: str  # PENDING, RUNNING, COMPLETE, FAILED
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    model_used: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class JobResponse(BaseModel):
     """Response model for job details."""
     id: str
@@ -25,7 +40,8 @@ class JobResponse(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     cost_estimate: float
-    outputs: Optional[List[Dict[str, str]]] = None  # List of {type, path, url}
+    outputs: Optional[List[Dict[str, str]]] = None
+    stage_results: Optional[List[StageResultResponse]] = None
     
     class Config:
         from_attributes = True
@@ -62,6 +78,15 @@ class ProfileCreateStage(BaseModel):
     filename_suffix: str = ""
 
 
+class NotificationConfigRequest(BaseModel):
+    """Notification settings for a profile."""
+    ntfy_topic: Optional[str] = None
+    ntfy_url: Optional[str] = None
+    discord_webhook: Optional[str] = None
+    pushover_user: Optional[str] = None
+    pushover_token: Optional[str] = None
+
+
 class ProfileCreateRequest(BaseModel):
     """Request model for creating a new profile."""
     id: str
@@ -69,8 +94,10 @@ class ProfileCreateRequest(BaseModel):
     description: Optional[str] = None
     skip_diarization: bool = False
     icon: Optional[str] = None
+    priority: int = 5
     syncthing_folder: Optional[str] = None
     syncthing_subfolder: Optional[str] = None
+    notifications: Optional[NotificationConfigRequest] = None
     stages: List[ProfileCreateStage]
 
 

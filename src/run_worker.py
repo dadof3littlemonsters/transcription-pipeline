@@ -34,9 +34,14 @@ DB_URL = "sqlite:///data/jobs.db"
 engine = create_engine(DB_URL)
 
 def get_next_job():
-    """Get the next QUEUED job from the database."""
+    """Get the next QUEUED job from the database, respecting priority."""
     with Session(engine) as session:
-        statement = select(Job).where(Job.status == "QUEUED").order_by(Job.created_at).limit(1)
+        statement = (
+            select(Job)
+            .where(Job.status == "QUEUED")
+            .order_by(Job.priority.asc(), Job.created_at.asc())
+            .limit(1)
+        )
         return session.exec(statement).first()
 
 def reset_stuck_jobs():
@@ -61,7 +66,7 @@ def run_worker():
     
     config_dir = Path("config").resolve()
     processing_dir = Path("processing").resolve()
-    output_dir = Path("output").resolve()
+    output_dir = Path("outputs").resolve()
     
     # Ensure logs dir exists
     Path("logs").mkdir(exist_ok=True)
