@@ -23,10 +23,21 @@ def get_db_session() -> Generator[Session, None, None]:
         yield session
 
 
+# BUG FIX: Use a singleton ProfileLoader instead of creating a new instance
+# on every request. The old code did `return ProfileLoader(config_dir)` which:
+#   1. Re-reads all YAML files from disk on every single API call
+#   2. Makes reload() after profile creation pointless (next request gets fresh instance anyway)
+# Now we create once and reuse, so reload() actually persists changes in memory.
+_profile_loader: Optional[ProfileLoader] = None
+
+
 def get_profile_loader() -> ProfileLoader:
-    """Dependency to get ProfileLoader instance."""
-    config_dir = Path("config").resolve()
-    return ProfileLoader(config_dir)
+    """Dependency to get ProfileLoader singleton instance."""
+    global _profile_loader
+    if _profile_loader is None:
+        config_dir = Path("config").resolve()
+        _profile_loader = ProfileLoader(config_dir)
+    return _profile_loader
 
 
 def validate_api_keys() -> Dict[str, bool]:
@@ -76,4 +87,3 @@ async def verify_api_key(
     """
     if PIPELINE_API_KEY and x_api_key != PIPELINE_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
-

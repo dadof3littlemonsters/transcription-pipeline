@@ -21,6 +21,8 @@ from src.api.dependencies import validate_api_keys
 from src.api.schemas import HealthCheckResponse, ReadinessCheckResponse
 from src.api.websocket import manager
 
+from src.api.routes.logs import router as logs_router, install_log_handler
+
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")),
@@ -56,8 +58,11 @@ async def lifespan(app: FastAPI):
     SQLModel.metadata.create_all(engine)
     
     # Ensure required directories exist
-    for directory in ["uploads", "processing", "output", "data", "logs"]:
+    for directory in ["uploads", "processing", "outputs", "data", "logs"]:
         Path(directory).mkdir(parents=True, exist_ok=True)
+    
+    # Install web log handler for the log console
+    install_log_handler()
     
     # Start Redis listener for WebSocket broadcasting
     redis_task = asyncio.create_task(redis_listener())
@@ -126,6 +131,9 @@ app.include_router(syncthing_router)
 
 from src.api.routes.costs import router as costs_router
 app.include_router(costs_router)
+
+from src.api.routes.logs import router as logs_router, install_log_handler
+app.include_router(logs_router)
 
 
 @app.websocket("/ws")
