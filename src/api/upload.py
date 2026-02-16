@@ -3,6 +3,7 @@ File upload handling utilities.
 """
 
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -68,23 +69,54 @@ async def save_uploaded_file(
     # Validate file
     validate_audio_file(file)
     
+    # Sanitize profile_id to prevent path traversal
+    safe_profile_id = re.sub(r'[^a-zA-Z0-9_-]', '', profile_id)
+    if not safe_profile_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid profile_id"
+        )
+    
     # Create upload directory
-    upload_dir = base_dir / profile_id
+    upload_dir = base_dir / safe_profile_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     
-    # Generate unique filename with timestamp
+    # Sanitize filename to prevent path traversal
+    original_name = re.sub(r'[^a-zA-Z0-9_\- ]', '', Path(file.filename).stem)
+    extension = Path(file.filename).suffix.lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        extension = ".bin"  # Fallback
+    
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    original_name = Path(file.filename).stem
-    extension = Path(file.filename).suffix
-    unique_filename = f"{timestamp}_{original_name}{extension}"
+    unique_filename = f"{timestamp}_{original_name[:100]}{extension}"
     
-    file_path = upload_dir / unique_filename
+    file_path = (upload_dir / unique_filename).resolve()
     
-    # Save file
+    # Verify the final path is within the upload directory
+    if not str(file_path).startswith(str(base_dir.resolve())):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file path"
+        )
+    
+    # Save file with size limit enforcement
     try:
+        bytes_written = 0
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while chunk := file.file.read(1024 * 1024):  # Read 1MB at a time
+                bytes_written += len(chunk)
+                if bytes_written > MAX_FILE_SIZE:
+                    buffer.close()
+                    file_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"File too large. Maximum size: {MAX_FILE_SIZE // (1024*1024)}MB"
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        raise
     except Exception as e:
+        file_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save file: {str(e)}"

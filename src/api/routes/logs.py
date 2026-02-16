@@ -16,6 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+from starlette.responses import JSONResponse
 
 router = APIRouter(prefix="/api/logs", tags=["Logs"])
 
@@ -29,11 +30,18 @@ class WebLogHandler(logging.Handler):
     
     def emit(self, record):
         try:
+            import re
+            message = self.format(record)
+            # Redact potential API keys and tokens (anything that looks like a key)
+            message = re.sub(r'(sk-|gsk_|hf_|pk_)[a-zA-Z0-9]{10,}', r'\1***REDACTED***', message)
+            # Redact Bearer tokens
+            message = re.sub(r'Bearer [a-zA-Z0-9_\-\.]+', 'Bearer ***REDACTED***', message)
+            
             entry = {
                 "timestamp": datetime.fromtimestamp(record.created).isoformat(),
                 "level": record.levelname,
                 "logger": record.name,
-                "message": self.format(record),
+                "message": message,
             }
             log_buffer.append(entry)
             
@@ -98,6 +106,13 @@ async def stream_logs(
     level: Optional[str] = Query(None),
 ):
     """Stream logs in real-time via Server-Sent Events (SSE)."""
+    
+    MAX_SUBSCRIBERS = 10
+    if len(log_subscribers) >= MAX_SUBSCRIBERS:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many log stream connections"}
+        )
     
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     log_subscribers.append(queue)

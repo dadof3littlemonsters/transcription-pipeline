@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
+const API_KEY = import.meta.env.VITE_PIPELINE_API_KEY || '';
 
 async function apiFetch(path, options = {}) {
-  const apiKey = document.querySelector('meta[name="api-key"]')?.content;
-  if (apiKey) {
-    options.headers = { ...options.headers, "X-API-Key": apiKey };
+  if (API_KEY) {
+    options.headers = { ...options.headers, "X-API-Key": API_KEY };
   }
   const res = await fetch(`${API_BASE}${path}`, options);
   if (!res.ok) {

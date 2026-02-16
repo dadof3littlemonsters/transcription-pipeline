@@ -59,7 +59,7 @@ class JobProcessor:
         
         # Redis for pub/sub status updates
         try:
-            self._redis = sync_redis.Redis(host="redis", port=6379, socket_connect_timeout=2)
+            self._redis = sync_redis.Redis(host="redis", port=6379, password=os.getenv("REDIS_PASSWORD", ""), socket_connect_timeout=2)
             self._redis.ping()
             logger.info("Redis connected for job status publishing")
         except Exception as e:

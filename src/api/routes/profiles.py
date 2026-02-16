@@ -8,7 +8,11 @@ import logging
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 
 from src.api.schemas import (
     ProfileResponse, 
@@ -23,6 +27,24 @@ from src.worker.profile_loader import ProfileLoader
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/profiles", tags=["Profiles"])
+
+
+def _safe_prompt_path(prompts_dir: Path, prompt_file: str) -> Path:
+    """Resolve a prompt file path and verify it's within the prompts directory."""
+    # Sanitize: no absolute paths, no parent traversal
+    if prompt_file.startswith("/") or ".." in prompt_file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid prompt_file path: {prompt_file}"
+        )
+    
+    resolved = (prompts_dir / prompt_file).resolve()
+    if not str(resolved).startswith(str(prompts_dir.resolve())):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Prompt file path escapes config directory"
+        )
+    return resolved
 
 
 def auto_id(name: str) -> str:
@@ -74,14 +96,23 @@ async def list_profiles(
 
 
 @router.post("", response_model=ProfileDetailResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def create_profile(
-    request: ProfileCreateRequest,
+    request: Request,
+    profile_request: ProfileCreateRequest,
     profile_loader: ProfileLoader = Depends(get_profile_loader),
 ):
     """Create a new profile with YAML config and prompt files."""
     
+    # 0. Validate profile ID format
+    if not re.match(r'^[a-z0-9][a-z0-9_-]{0,63}$', profile_request.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Profile ID must be lowercase alphanumeric with hyphens/underscores, 1-64 chars, starting with a letter or number"
+        )
+    
     # 1. Check profile doesn't already exist
-    if profile_loader.get_profile(request.id):
+    if profile_loader.get_profile(profile_request.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Profile '{request.id}' already exists"
@@ -89,9 +120,9 @@ async def create_profile(
     
     # 2. Auto-generate prompt_file paths if not provided
     stages_data = []
-    for i, stage in enumerate(request.stages):
+    for i, stage in enumerate(profile_request.stages):
         if not stage.prompt_file:
-            stage.prompt_file = f"{request.id}/stage_{i+1}_{auto_id(stage.name)}.md"
+            stage.prompt_file = f"{profile_request.id}/stage_{i+1}_{auto_id(stage.name)}.md"
         
         stages_data.append({
             "name": stage.name,
@@ -109,25 +140,25 @@ async def create_profile(
     
     # 3. Build YAML dict
     yaml_data = {
-        "name": request.name,
-        "description": request.description or "",
-        "skip_diarization": request.skip_diarization,
+        "name": profile_request.name,
+        "description": profile_request.description or "",
+        "skip_diarization": profile_request.skip_diarization,
         "stages": stages_data,
     }
     
     # Priority
-    yaml_data["priority"] = request.priority
+    yaml_data["priority"] = profile_request.priority
     
     # Add syncthing config if provided
-    if request.syncthing_folder:
+    if profile_request.syncthing_folder:
         yaml_data["syncthing"] = {
-            "share_folder": request.syncthing_folder,
-            "subfolder": request.syncthing_subfolder or "",
+            "share_folder": profile_request.syncthing_folder,
+            "subfolder": profile_request.syncthing_subfolder or "",
         }
     
     # Add notification config if provided
-    if request.notifications:
-        notif = request.notifications
+    if profile_request.notifications:
+        notif = profile_request.notifications
         notif_data = {}
         if notif.ntfy_topic: notif_data["ntfy_topic"] = notif.ntfy_topic
         if notif.ntfy_url: notif_data["ntfy_url"] = notif.ntfy_url
@@ -144,7 +175,7 @@ async def create_profile(
     prompts_dir = profile_loader.prompts_dir
     
     profiles_dir.mkdir(parents=True, exist_ok=True)
-    profile_yaml_path = profiles_dir / f"{request.id}.yaml"
+    profile_yaml_path = profiles_dir / f"{profile_request.id}.yaml"
     
     try:
         with open(profile_yaml_path, 'w') as f:
@@ -155,8 +186,8 @@ async def create_profile(
         # 5. Write each stage's prompt_content to config/prompts/{stage.prompt_file}
         written_prompts = []
         try:
-            for stage in request.stages:
-                prompt_path = prompts_dir / stage.prompt_file
+            for stage in profile_request.stages:
+                prompt_path = _safe_prompt_path(prompts_dir, stage.prompt_file)
                 prompt_path.parent.mkdir(parents=True, exist_ok=True)
                 
                 with open(prompt_path, 'w') as f:
@@ -186,14 +217,14 @@ async def create_profile(
         # 6b. Auto-register inbound folder mapping
         # Maps the profile ID as a folder name so files dropped in
         # uploads/{profile_id}/ get routed to this profile automatically
-        profile_loader.add_folder_mapping(request.id, request.id)
+        profile_loader.add_folder_mapping(profile_request.id, profile_request.id)
         
         # 7. Return the new profile
-        profile = profile_loader.get_profile(request.id)
+        profile = profile_loader.get_profile(profile_request.id)
         if not profile:
             logger.error(
                 f"Profile created but failed to load. "
-                f"request.id='{request.id}', "
+                f"profile_request.id='{profile_request.id}', "
                 f"available profiles: {list(profile_loader._profiles.keys())}"
             )
             raise HTTPException(
@@ -212,7 +243,7 @@ async def create_profile(
         ]
         
         return ProfileDetailResponse(
-            id=request.id,
+            id=profile_request.id,
             name=profile.name,
             description=profile.description,
             stages=stages,
@@ -390,7 +421,7 @@ async def update_stage_prompt(
     
     stage = profile.stages[stage_index]
     # BUG FIX: Use profile_loader.prompts_dir instead of relative path
-    prompt_path = profile_loader.prompts_dir / stage.prompt_file
+    prompt_path = _safe_prompt_path(profile_loader.prompts_dir, stage.prompt_file)
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(body.get("prompt", ""), encoding="utf-8")
     
@@ -401,7 +432,9 @@ async def update_stage_prompt(
 
 
 @router.post("/{profile_id}/dry-run")
+@limiter.limit("10/minute")
 async def dry_run_stage(
+    request: Request,
     profile_id: str,
     body: dict,
     profile_loader: ProfileLoader = Depends(get_profile_loader),

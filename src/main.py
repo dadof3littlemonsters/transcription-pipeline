@@ -81,7 +81,7 @@ async def redis_listener():
     """Subscribe to Redis job_updates channel and broadcast via WebSocket."""
     while True:
         try:
-            r = aioredis.Redis(host="redis", port=6379)
+            r = aioredis.Redis(host="redis", port=6379, password=os.getenv("REDIS_PASSWORD", ""))
             pubsub = r.pubsub()
             await pubsub.subscribe("job_updates")
             logger.info("Redis listener subscribed to job_updates")
@@ -117,6 +117,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API key authentication middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Require X-API-Key header on all /api/ routes when PIPELINE_API_KEY is set."""
+    
+    OPEN_PATHS = {"/health", "/ready", "/ws", "/docs", "/openapi.json", "/redoc"}
+    
+    async def dispatch(self, request, call_next):
+        api_key = os.getenv("PIPELINE_API_KEY", "")
+        
+        # Skip auth if no key is configured (dev mode)
+        if not api_key:
+            return await call_next(request)
+        
+        path = request.url.path
+        
+        # Skip auth for non-API routes (frontend static files, health, websocket)
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        
+        # Check the key
+        request_key = request.headers.get("x-api-key", "")
+        if request_key != api_key:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing API key"},
+            )
+        
+        return await call_next(request)
+
+app.add_middleware(APIKeyMiddleware)
+
 # Slowapi rate limiting error handler
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -139,6 +173,15 @@ app.include_router(logs_router)
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time job updates."""
+    # Check API key if configured
+    api_key = os.getenv("PIPELINE_API_KEY", "")
+    if api_key:
+        # Accept key via query param: /ws?key=xxx
+        client_key = websocket.query_params.get("key", "")
+        if client_key != api_key:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+    
     await manager.connect(websocket)
     try:
         while True:

@@ -12,15 +12,14 @@ import LogConsole from "./LogConsole";
 // For production: VITE_API_URL should be empty (relative URLs) or full production URL
 // For local development: VITE_API_URL=http://localhost:8888
 const API_BASE = import.meta.env.VITE_API_URL || '';
+const API_KEY = import.meta.env.VITE_PIPELINE_API_KEY || '';
 console.log('Frontend: API_BASE =', API_BASE);
 const USE_MOCK = false;
 
 async function apiFetch(path, options = {}) {
   console.log(`Frontend: apiFetch called for path: ${path}`);
-  const apiKey = document.querySelector('meta[name="api-key"]')?.content;
-  console.log(`Frontend: Found API key in meta tag: ${apiKey ? 'yes' : 'no'}`);
-  if (apiKey) {
-    options.headers = { ...options.headers, "X-API-Key": apiKey };
+  if (API_KEY) {
+    options.headers = { ...options.headers, "X-API-Key": API_KEY };
     console.log(`Frontend: Added X-API-Key header`);
   }
   const url = `${API_BASE}${path}`;
@@ -1663,7 +1662,8 @@ export default function ControlHub() {
 
     const connectWs = () => {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      const wsKeyParam = API_KEY ? `?key=${encodeURIComponent(API_KEY)}` : '';
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws${wsKeyParam}`);
 
       ws.onmessage = (event) => {
         try {

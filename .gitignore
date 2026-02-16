@@ -4,6 +4,8 @@
 .env.*.local
 .env.backup
 .env.production
+frontend/.env
+frontend/.env.local
 *.pem
 *.key
 secrets/
