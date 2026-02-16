@@ -1,0 +1,59 @@
+{
+    email delboy666@gmail.com
+}
+
+peptifit.delboysden.uk {
+    encode zstd gzip
+
+    # Browser calls /api/* → backend root via strip_prefix
+    route /api* {
+        uri strip_prefix /api
+        reverse_proxy backend:3001
+    }
+
+    # Everything else → Next.js app
+    reverse_proxy app:3000
+}
+
+# Optional second site; will work when a container named "documents" exists
+documents.trotters-stuff.uk {
+    basic_auth * {
+        admin $2a$14$QEhxhXEwyDUrDZz4DFutY.esi27Qb3IXUW/VcFphiMPHcqJ3SlIxK
+    }
+    encode zstd gzip
+    reverse_proxy documents:80
+}
+
+# Apache Guacamole - Multi-protocol remote desktop gateway
+ssh.trotters-stuff.uk {
+    encode zstd gzip
+    rewrite * /guacamole{path}
+    reverse_proxy guacamole:8080
+}
+
+# Open WebUI - AI Chat Interface
+ai.trotters-stuff.uk {
+    encode zstd gzip
+    reverse_proxy open-webui:8080
+}
+
+# Syncthing - File Synchronization
+syncthing.trotters-stuff.uk {
+    encode zstd gzip
+    reverse_proxy syncthing:8384
+}
+
+# Dispatcharr - IPTV Stream Management
+stream.delboysden.uk {
+    encode zstd gzip
+    reverse_proxy 172.20.0.13:9191
+}
+
+# Transcription Pipeline
+transcribe.delboysden.uk {
+    basic_auth * {
+        craig $2a$14$Xd.zQ0x4WGnan6Hormfleuy6ec9LMT2PB1wysHq0hQYXsCHxp1yqm
+    }
+    encode zstd gzip
+    reverse_proxy transcription-pipeline:8000
+}
