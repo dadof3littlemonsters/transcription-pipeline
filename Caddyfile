@@ -1,0 +1,12 @@
+# Caddyfile for Transcription Pipeline with Basic Auth
+# Place this file at /etc/caddy/Caddyfile on your VPS
+
+transcribe.delboysden.uk {
+    # Basic authentication for all routes
+    basicauth * {
+        craig $2a$14$Xd.zQ0x4WGnan6Hormfleuy6ec9LMT2PB1wysHq0hQYXsCHxp1yqm
+    }
+    
+    # Reverse proxy to the transcription pipeline app
+    reverse_proxy localhost:8888
+}
