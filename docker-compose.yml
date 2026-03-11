@@ -1,6 +1,26 @@
 version: '3.8'
 
 services:
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: transcription-syncthing
+    restart: unless-stopped
+    hostname: syncthing
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - STGUIADDRESS=0.0.0.0:8384
+    volumes:
+      - ./syncthing-config:/var/syncthing/config
+      - syncthing_data:/var/syncthing/Sync
+      - ./uploads:/var/syncthing/uploads
+      - ./outputs/docs/work:/var/syncthing/work-outputs
+      - ./outputs/docs:/var/syncthing/kate-outputs:ro
+      - ./outputs/docs/keira:/var/syncthing/keira-outputs:ro
+    networks:
+      - default
+      - peptifit_stack
+
   app:
     build:
       context: .
@@ -8,7 +28,7 @@ services:
     image: transcription-pipeline:latest
     container_name: transcription-pipeline
     ports:
-      - "8888:8000"
+      - "127.0.0.1:8888:8000"
     volumes:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
@@ -18,6 +38,9 @@ services:
       - ./config:/app/config
       - ./data:/app/data
       - ./frontend/dist:/app/frontend/dist
+    networks:
+      - default
+      - peptifit_stack
     environment:
       - API_KEY=${API_KEY:-change-me-in-production}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
@@ -31,7 +54,14 @@ services:
       - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
       - PIPELINE_API_KEY=${PIPELINE_API_KEY:-}
       - LOG_FORMAT=${LOG_FORMAT:-}
+      - REDIS_HOST=${REDIS_HOST:-transcription-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - SYNC_INGEST_INBOX_DIR=${SYNC_INGEST_INBOX_DIR:-/app/sync_inbox}
+      - SYNC_INGEST_INGESTED_DIR=${SYNC_INGEST_INGESTED_DIR:-/app/sync_inbox/_ingested}
+      - SYNC_INGEST_FAILED_DIR=${SYNC_INGEST_FAILED_DIR:-/app/sync_inbox/_failed}
+      - SYNC_INGEST_STATE_DB=${SYNC_INGEST_STATE_DB:-/app/data/sync_ingest.db}
+      - SYNC_INGEST_LEGACY_DIRS=${SYNC_INGEST_LEGACY_DIRS:-/app/uploads/kate,/app/uploads/keira}
       - HOST=0.0.0.0
       - PORT=8000
     depends_on:
@@ -63,15 +93,7 @@ services:
       dockerfile: Dockerfile
     image: transcription-pipeline:latest
     container_name: transcription-worker
-    command: python src/worker.py
-    volumes:
-      - ./uploads:/app/uploads
-      - ./outputs:/app/outputs
-      - ./processing:/app/processing
-      - ./models:/app/models
-      - ./logs:/app/logs
-      - ./config:/app/config
-      - ./.cache:/app/.cache
+    command: python -m src.run_worker
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
@@ -89,12 +111,59 @@ services:
       - KATE_EMAIL=${KATE_EMAIL:-}
       - KEIRA_EMAIL=${KEIRA_EMAIL:-}
       - KEIRA_COHORT_EMAIL=${KEIRA_COHORT_EMAIL:-}
+      - REDIS_HOST=${REDIS_HOST:-transcription-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - PYTHONPATH=/app/src
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./processing:/app/processing
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./.cache:/app/.cache
     depends_on:
       - redis
     restart: unless-stopped
     deploy:
       replicas: ${WORKER_REPLICAS:-1}
 
+  ingester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: transcription-pipeline:latest
+    container_name: transcription-ingester
+    command: python -m src.sync_ingest
+    environment:
+      - PIPELINE_API_KEY=${PIPELINE_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SYNC_INGEST_API_BASE_URL=${SYNC_INGEST_API_BASE_URL:-http://app:8000}
+      - SYNC_INGEST_INBOX_DIR=${SYNC_INGEST_INBOX_DIR:-/app/sync_inbox}
+      - SYNC_INGEST_INGESTED_DIR=${SYNC_INGEST_INGESTED_DIR:-/app/sync_inbox/_ingested}
+      - SYNC_INGEST_FAILED_DIR=${SYNC_INGEST_FAILED_DIR:-/app/sync_inbox/_failed}
+      - SYNC_INGEST_STATE_DB=${SYNC_INGEST_STATE_DB:-/app/data/sync_ingest.db}
+      - SYNC_INGEST_POLL_SECONDS=${SYNC_INGEST_POLL_SECONDS:-10}
+      - SYNC_INGEST_STABLE_SECONDS=${SYNC_INGEST_STABLE_SECONDS:-8}
+      - SYNC_INGEST_MAX_FILE_SIZE_MB=${SYNC_INGEST_MAX_FILE_SIZE_MB:-500}
+      - SYNC_INGEST_FOLDER_MAP=${SYNC_INGEST_FOLDER_MAP:-meeting:meeting,supervision:supervision,client:client,braindump:braindump,kate:social_work_lecture,keira:business_lecture}
+      - SYNC_INGEST_LEGACY_DIRS=${SYNC_INGEST_LEGACY_DIRS:-/app/uploads/kate,/app/uploads/keira}
+    volumes:
+      - ./sync_inbox:/app/sync_inbox
+      - ./uploads:/app/uploads
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - app
+      - worker
+    restart: unless-stopped
+
 volumes:
   redis_data:
+  syncthing_data:
+
+networks:
+  peptifit_stack:
+    external: true

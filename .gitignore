@@ -68,6 +68,8 @@ processing/*
 !processing/.gitkeep
 uploads/*
 !uploads/.gitkeep
+sync_inbox/*
+!sync_inbox/.gitkeep
 
 # Logs
 logs/*.log
@@ -87,6 +89,7 @@ src.zip
 
 # Docker
 .dockerignore
+syncthing-config/
 
 # Testing
 .coverage
