@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
-# Note: Run with .venv/bin/python if available
-# or activate venv: source .venv/bin/activate
+"""Database-queue worker for the transcription pipeline."""
 
+import os
 import sys
 import time
 import logging
-from pathlib import Path
-from sqlmodel import Session, create_engine, select
 import signal
+from pathlib import Path
+from datetime import datetime
+
+from sqlmodel import Session, create_engine, select
 from dotenv import load_dotenv
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
-
+# Imports must use src. prefix to match the rest of the codebase
 from src.api.models import Job, StageResult
 from src.worker.processor import JobProcessor
 
 # Load env vars
 load_dotenv()
 
-# Configure logging
+# Configure logging to stdout (Docker captures this)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/worker.log")
     ]
 )
 logger = logging.getLogger("worker")
 
 DB_URL = "sqlite:///data/jobs.db"
 engine = create_engine(DB_URL)
+
 
 def get_next_job():
     """Get the next QUEUED job from the database, respecting priority."""
@@ -44,6 +44,7 @@ def get_next_job():
         )
         return session.exec(statement).first()
 
+
 def reset_stuck_jobs():
     """Reset jobs that were left in PROCESSING state (e.g., due to crash)."""
     with Session(engine) as session:
@@ -54,35 +55,32 @@ def reset_stuck_jobs():
             logger.warning(f"Found {len(stuck_jobs)} stuck jobs. Resetting to QUEUED.")
             for job in stuck_jobs:
                 job.status = "QUEUED"
-                # We don't reset stage results - we want to resume!
                 session.add(job)
                 logger.info(f"Reset Job ID {job.id} to QUEUED (will resume from last stage)")
             session.commit()
 
+
 def run_worker():
     """Main worker loop."""
-    # Add local bin to PATH for ffmpeg
-    os.environ["PATH"] = str(Path("bin").resolve()) + os.pathsep + os.environ["PATH"]
-    
     config_dir = Path("config").resolve()
     processing_dir = Path("processing").resolve()
     output_dir = Path("outputs").resolve()
     
-    # Ensure logs dir exists
+    # Ensure directories exist
     Path("logs").mkdir(exist_ok=True)
+    processing_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(exist_ok=True)
     
     logger.info("Initializing worker...")
     try:
-        # Reset any stuck jobs from previous runs
         reset_stuck_jobs()
-        
         processor = JobProcessor(config_dir, processing_dir, output_dir)
         logger.info("Worker initialized successfully.")
     except Exception as e:
-        logger.critical(f"Failed to initialize worker: {e}")
+        logger.critical(f"Failed to initialize worker: {e}", exc_info=True)
         return
 
-    logger.info("Starting worker loop. Press Ctrl+C to stop.")
+    logger.info("Starting worker loop. Polling for jobs every 5 seconds.")
     
     running = True
     def signal_handler(sig, frame):
@@ -97,15 +95,15 @@ def run_worker():
         try:
             job = get_next_job()
             if job:
-                logger.info(f"Processing Job ID: {job.id} (File: {job.original_filename})")
+                logger.info(f"Processing Job ID: {job.id} (File: {job.filename})")
                 processor.process_job(job.id)
                 logger.info(f"Finished Job ID: {job.id}")
             else:
-                # Sleep if no jobs
                 time.sleep(5)
         except Exception as e:
-            logger.error(f"Error in worker loop: {e}")
-            time.sleep(5) # Wait before retrying
+            logger.error(f"Error in worker loop: {e}", exc_info=True)
+            time.sleep(5)
+
 
 if __name__ == "__main__":
     run_worker()

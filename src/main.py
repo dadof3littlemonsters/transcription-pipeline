@@ -29,6 +29,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
 # Structured JSON logging for production
 if os.getenv("LOG_FORMAT", "").lower() == "json":
@@ -81,7 +84,11 @@ async def redis_listener():
     """Subscribe to Redis job_updates channel and broadcast via WebSocket."""
     while True:
         try:
-            r = aioredis.Redis(host="redis", port=6379, password=os.getenv("REDIS_PASSWORD", ""))
+            r = aioredis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                password=REDIS_PASSWORD,
+            )
             pubsub = r.pubsub()
             await pubsub.subscribe("job_updates")
             logger.info("Redis listener subscribed to job_updates")
@@ -139,8 +146,8 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/"):
             return await call_next(request)
         
-        # Check the key
-        request_key = request.headers.get("x-api-key", "")
+        # Check header key first; allow query key for SSE/WebSocket-like clients
+        request_key = request.headers.get("x-api-key", "") or request.query_params.get("key", "")
         if request_key != api_key:
             return JSONResponse(
                 status_code=401,
@@ -165,6 +172,9 @@ app.include_router(syncthing_router)
 
 from src.api.routes.costs import router as costs_router
 app.include_router(costs_router)
+
+from src.api.routes.ingester import router as ingester_router
+app.include_router(ingester_router)
 
 from src.api.routes.logs import router as logs_router, install_log_handler
 app.include_router(logs_router)

@@ -58,22 +58,48 @@ python check_services.py
 
 ### 5. Process Audio Files
 
-Place audio files in the appropriate upload directory:
+Use one of these paths:
+
+- API/UI upload (default): frontend upload form or `POST /api/jobs`
+- Syncthing ingest (recommended for mini PC recorders): drop files in Syncthing inbound folders and let `ingester` auto-create jobs
+
+### 6. Syncthing Ingest (Mini PC -> VPS)
+
+The stack includes an `ingester` service (`python -m src.sync_ingest`) that scans `sync_inbox/` and submits files to `/api/jobs`.
+
+Expected VPS inbound structure:
 
 ```
-uploads/
-├── meeting/       # Meeting recordings → .md + .docx
-├── supervision/   # Clinical supervision → .md + .docx
-├── client/        # Client sessions → .md + .docx
-├── lecture/       # Lectures → .docx only
-└── braindump/     # Voice notes → .md only
+sync_inbox/
+├── work/
+│   ├── meeting/
+│   ├── supervision/
+│   ├── client/
+│   └── braindump/
+└── lectures/
+    ├── kate/
+    └── keira/
 ```
 
-The worker automatically detects and processes new files:
+Default mapping:
 
-```
-New audio detected → Processing → Transcription → Diarization → 
-Formatting → Output generation → Cleanup
+- `meeting -> meeting`
+- `supervision -> supervision`
+- `client -> client`
+- `braindump -> braindump`
+- `kate -> social_work_lecture`
+- `keira -> business_lecture`
+
+After ingest:
+
+- Successfully queued files move to `sync_inbox/_ingested/`
+- Failed files move to `sync_inbox/_failed/`
+- Duplicates are suppressed by SHA-256 hash (`data/sync_ingest.db`)
+
+You can customize routing via `.env`:
+
+```bash
+SYNC_INGEST_FOLDER_MAP=meeting:meeting,supervision:supervision,client:client,braindump:braindump,kate:social_work_lecture,keira:business_lecture
 ```
 
 Outputs are saved to:
@@ -83,11 +109,13 @@ Outputs are saved to:
 ## Pipeline Flow
 
 ```
-1. File Detection
+1. Ingest
+   ├─→ API upload (`POST /api/jobs`)
+   └─→ Syncthing ingest (`sync_inbox` -> ingester)
    ↓
-2. Move to processing/
+2. Queue Job (SQLite `job` table, status=QUEUED)
    ↓
-3. Parallel Processing:
+3. Worker Processing:
    ├─→ Groq Whisper (transcription with timestamps)
    └─→ Pyannote (speaker diarization)
    ↓
@@ -281,7 +309,7 @@ docker-compose up -d
 
 1. Add prompt template in `src/formatting.py`
 2. Add to `PROMPT_TEMPLATES` dictionary
-3. Update note type detection in `src/worker.py`
+3. Update accepted profile routing in `src/api/routes/jobs.py` and/or profile config
 4. Update output rules in `src/output.py`
 
 ## License

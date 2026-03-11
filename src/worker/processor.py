@@ -26,6 +26,9 @@ from .email import EmailSender, get_kate_email, get_keira_email, get_keira_cohor
 from .merge import merge_transcript_with_speakers
 
 logger = logging.getLogger(__name__)
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
 # Database configuration - TODO: Move to config
 DB_URL = "sqlite:///data/jobs.db"
@@ -59,7 +62,12 @@ class JobProcessor:
         
         # Redis for pub/sub status updates
         try:
-            self._redis = sync_redis.Redis(host="redis", port=6379, password=os.getenv("REDIS_PASSWORD", ""), socket_connect_timeout=2)
+            self._redis = sync_redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                password=REDIS_PASSWORD,
+                socket_connect_timeout=2,
+            )
             self._redis.ping()
             logger.info("Redis connected for job status publishing")
         except Exception as e:
@@ -549,9 +557,13 @@ class JobProcessor:
         
         # Output
         self._record_stage(session, job, "output", "RUNNING")
+        docs_dir = None
+        if note_type in {"meeting", "supervision", "client", "braindump"}:
+            docs_dir = self.output_generator.get_user_docs_dir(f"work/{note_type}")
         outputs = self.output_generator.generate_outputs(
             formatted_text, note_type, audio_path.stem, 
-            {"duration": duration, "processed_at": datetime.now().isoformat()}
+            {"duration": duration, "processed_at": datetime.now().isoformat()},
+            docs_dir=docs_dir,
         )
         result["outputs"] = outputs
         result["success"] = True

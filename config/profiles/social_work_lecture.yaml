@@ -1,5 +1,8 @@
 name: social_work_lecture
 skip_diarization: true
+syncthing:
+  share_folder: kate-outputs
+  subfolder: kate
 stages:
   - name: pre_filter
     prompt_file: social_work/pre_filter.md

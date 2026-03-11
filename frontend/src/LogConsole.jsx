@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
-const API_KEY = import.meta.env.VITE_PIPELINE_API_KEY || '';
+
+// API key: check sessionStorage first (set by login), fall back to env var
+function getApiKey() {
+  return sessionStorage.getItem("pipeline_key") || import.meta.env.VITE_PIPELINE_API_KEY || '';
+}
 
 async function apiFetch(path, options = {}) {
-  if (API_KEY) {
-    options.headers = { ...options.headers, "X-API-Key": API_KEY };
+  const apiKey = getApiKey();
+  if (apiKey) {
+    options.headers = { ...options.headers, "X-API-Key": apiKey };
   }
-  options.credentials = 'include';
   const res = await fetch(`${API_BASE}${path}`, options);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -126,7 +130,9 @@ export default function LogConsole() {
       return;
     }
 
-    const url = `${API_BASE}/api/logs/stream?level=${levelFilter}`;
+    const apiKey = getApiKey();
+    const keyParam = apiKey ? `&key=${encodeURIComponent(apiKey)}` : "";
+    const url = `${API_BASE}/api/logs/stream?level=${levelFilter}${keyParam}`;
     const es = new EventSource(url);
     eventSourceRef.current = es;
 

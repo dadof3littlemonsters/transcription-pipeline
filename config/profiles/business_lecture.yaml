@@ -1,5 +1,8 @@
 name: business_lecture
 skip_diarization: true
+syncthing:
+  share_folder: keira-processed
+  subfolder: keira
 stages:
   - name: clean
     prompt_file: business/clean.md

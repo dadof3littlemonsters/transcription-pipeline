@@ -49,18 +49,8 @@ stream.delboysden.uk {
     reverse_proxy 172.20.0.13:9191
 }
 
-# Transcription Pipeline
+# Transcription Pipeline (auth handled by FastAPI API key middleware)
 transcribe.delboysden.uk {
-    # SSE endpoint - excluded from basic auth (protected by API key middleware)
-    handle /api/logs/stream {
-        encode zstd gzip
-        reverse_proxy transcription-pipeline:8000
-    }
-
-    # Everything else requires basic auth
-    basic_auth * {
-        craig $2a$14$Xd.zQ0x4WGnan6Hormfleuy6ec9LMT2PB1wysHq0hQYXsCHxp1yqm
-    }
     encode zstd gzip
     reverse_proxy transcription-pipeline:8000
 }

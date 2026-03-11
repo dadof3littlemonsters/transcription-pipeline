@@ -40,7 +40,12 @@ class OutputGenerator:
         return self.docs_dir
 
     def generate_outputs(
-        self, formatted_text: str, note_type: str, filename: str, metadata: dict = None
+        self,
+        formatted_text: str,
+        note_type: str,
+        filename: str,
+        metadata: dict = None,
+        docs_dir: Optional[Path] = None,
     ) -> dict:
         """Generate appropriate output formats based on note_type.
 
@@ -62,18 +67,23 @@ class OutputGenerator:
 
         markdown_path: Optional[Path] = None
         docx_path: Optional[Path] = None
+        target_docs_dir = docs_dir if docs_dir else self.docs_dir
+        target_docs_dir.mkdir(parents=True, exist_ok=True)
+        target_markdown_dir = self.transcripts_dir
+        if note_type == "braindump" and docs_dir:
+            target_markdown_dir = target_docs_dir
 
         # Generate markdown if needed
         if generate_md:
             md_content = self._create_markdown(formatted_text, title, metadata)
             safe_title = re.sub(r'[^\w\s-]', '', title).strip().replace(' ', '_')
-            markdown_path = self.transcripts_dir / f"{safe_title}.md"
+            markdown_path = target_markdown_dir / f"{safe_title}.md"
             markdown_path.write_text(md_content, encoding='utf-8')
 
         # Generate docx if needed
         if generate_docx:
             safe_title = re.sub(r'[^\w\s-]', '', title).strip().replace(' ', '_')
-            docx_path = self.docs_dir / f"{safe_title}.docx"
+            docx_path = target_docs_dir / f"{safe_title}.docx"
 
             # Try pandoc first, fallback to python-docx
             if self._pandoc_available() and markdown_path:

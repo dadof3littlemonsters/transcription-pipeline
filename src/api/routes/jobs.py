@@ -3,6 +3,7 @@ Job management API routes.
 """
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException, Request, status, Query
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from src.api.models import Job, StageResult
@@ -22,6 +24,74 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
 limiter = Limiter(key_func=get_remote_address)
+
+OUTPUT_EXTENSIONS = {".md", ".docx", ".txt", ".json"}
+
+
+def _normalize_name(value: str) -> str:
+    """Lowercase and remove non-alphanumerics for fuzzy filename matching."""
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _candidate_stems(filename: str) -> set[str]:
+    """Generate likely output stem variants from an uploaded job filename."""
+    stem = Path(filename).stem
+    candidates = {stem}
+
+    # Strip known timestamp prefixes used by upload naming
+    patterns = [
+        r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_?",
+        r"^\d{8}_\d{6}_?",
+        r"^\d{8}_\d{6}-?",
+    ]
+    for pat in patterns:
+        cleaned = re.sub(pat, "", stem)
+        if cleaned:
+            candidates.add(cleaned)
+
+    # Also normalize common Syncthing conflict token to improve matching
+    for c in list(candidates):
+        normalized = re.sub(r"sync-conflict-\d{8}-\d{6}-[A-Z0-9]+", "", c, flags=re.IGNORECASE)
+        normalized = re.sub(r"__+", "_", normalized).strip("_- ")
+        if normalized:
+            candidates.add(normalized)
+
+    return {c for c in candidates if c}
+
+
+def _collect_output_files(job: Job) -> list[dict]:
+    """Collect output files for a job using robust stem matching."""
+    output_dir = Path("outputs")
+    if not output_dir.exists():
+        return []
+
+    stems = _candidate_stems(job.filename)
+    normalized_stems = {_normalize_name(s) for s in stems if s}
+    files: list[dict] = []
+    seen_paths: set[str] = set()
+
+    for output_file in output_dir.rglob("*"):
+        if not output_file.is_file():
+            continue
+        if output_file.suffix.lower() not in OUTPUT_EXTENSIONS:
+            continue
+
+        out_stem = output_file.stem
+        normalized_out_stem = _normalize_name(out_stem)
+        if any(s and s in normalized_out_stem for s in normalized_stems):
+            out_path = str(output_file)
+            if out_path in seen_paths:
+                continue
+            seen_paths.add(out_path)
+            files.append(
+                {
+                    "type": output_file.suffix.lstrip("."),
+                    "path": out_path,
+                    "name": output_file.name,
+                }
+            )
+
+    return files
 
 
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
@@ -87,20 +157,7 @@ async def get_job(
     response = JobResponse.from_orm(job)
     
     if job.status == "COMPLETE":
-        # Look for output files
-        output_dir = Path("outputs")
-        job_stem = Path(job.filename).stem
-        
-        outputs = []
-        for output_file in output_dir.rglob(f"{job_stem}*"):
-            if output_file.is_file():
-                outputs.append({
-                    "type": output_file.suffix[1:],  # Remove leading dot
-                    "path": str(output_file),
-                    "name": output_file.name,
-                })
-        
-        response.outputs = outputs
+        response.outputs = _collect_output_files(job)
     
     return response
 
@@ -136,24 +193,19 @@ async def get_job_outputs(
                     "exists": True,
                 })
     
-    # Check final output files
-    output_dir = Path("outputs")
-    job_stem = Path(job.filename).stem
-    
-    # Remove timestamp prefix for matching
-    import re
-    clean_stem = re.sub(r'^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}_?', '', job_stem)
-    
-    for output_file in output_dir.rglob(f"*{clean_stem}*"):
-        if output_file.is_file():
-            files.append({
-                "path": str(output_file),
-                "name": output_file.name,
-                "type": output_file.suffix.lstrip("."),
-                "stage": "final",
-                "size_bytes": output_file.stat().st_size,
-                "exists": True,
-            })
+    # Check final output files with robust matching
+    for output in _collect_output_files(job):
+        p = Path(output["path"])
+        if not p.exists() or not p.is_file():
+            continue
+        files.append({
+            "path": output["path"],
+            "name": output["name"],
+            "type": output["type"],
+            "stage": "final",
+            "size_bytes": p.stat().st_size,
+            "exists": True,
+        })
     
     return {
         "job_id": job_id,
@@ -191,7 +243,9 @@ async def list_jobs(
     if profile_id:
         count_statement = count_statement.where(Job.profile_id == profile_id)
     
-    total = len(session.exec(count_statement).all())
+    total = session.exec(
+        select(func.count()).select_from(count_statement.subquery())
+    ).one()
     
     # Apply pagination
     statement = statement.limit(limit).offset(offset)

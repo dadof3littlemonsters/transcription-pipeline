@@ -12,17 +12,22 @@ import LogConsole from "./LogConsole";
 // For production: VITE_API_URL should be empty (relative URLs) or full production URL
 // For local development: VITE_API_URL=http://localhost:8888
 const API_BASE = import.meta.env.VITE_API_URL || '';
-const API_KEY = import.meta.env.VITE_PIPELINE_API_KEY || '';
 console.log('Frontend: API_BASE =', API_BASE);
 const USE_MOCK = false;
 
+// API key: check sessionStorage first (set by login), fall back to env var
+function getApiKey() {
+  return sessionStorage.getItem("pipeline_key") || import.meta.env.VITE_PIPELINE_API_KEY || '';
+}
+let API_KEY = getApiKey();
+
 async function apiFetch(path, options = {}) {
   console.log(`Frontend: apiFetch called for path: ${path}`);
-  if (API_KEY) {
-    options.headers = { ...options.headers, "X-API-Key": API_KEY };
+  const currentKey = getApiKey();
+  if (currentKey) {
+    options.headers = { ...options.headers, "X-API-Key": currentKey };
     console.log(`Frontend: Added X-API-Key header`);
   }
-  options.credentials = 'include';
   const url = `${API_BASE}${path}`;
   console.log(`Frontend: Fetching URL: ${url}`);
   const res = await fetch(url, options);
@@ -130,6 +135,26 @@ const PROFILE_COLORS = {
   braindump: { accent: "#f472b6", glow: "rgba(244,114,182,0.15)", gradient: "linear-gradient(135deg, rgba(244,114,182,0.2), rgba(244,114,182,0.05))" },
 };
 
+const STANDARD_WORK_TYPES = new Set(["meeting", "supervision", "client", "braindump"]);
+
+function hasOutputSync(profile) {
+  return !!profile.syncthing_folder || STANDARD_WORK_TYPES.has(profile.id);
+}
+
+function getOutputPathLabel(profileOrDraft) {
+  const profileId = profileOrDraft.profileId || profileOrDraft.id;
+  const syncthingFolder = profileOrDraft.syncthingFolder || profileOrDraft.syncthing_folder;
+  const syncthingSubfolder = profileOrDraft.syncthingSubfolder || profileOrDraft.syncthing_subfolder;
+
+  if (syncthingFolder) {
+    return `${syncthingFolder}${syncthingSubfolder ? `/${syncthingSubfolder}` : ""}`;
+  }
+  if (STANDARD_WORK_TYPES.has(profileId)) {
+    return `outputs/docs/work/${profileId}/`;
+  }
+  return `outputs/docs/${syncthingSubfolder || profileId}/`;
+}
+
 const STATUS_CONFIG = {
   COMPLETE: { color: "#34d399", bg: "rgba(52,211,153,0.12)", icon: Icons.check, label: "Complete" },
   PROCESSING: { color: "#60a5fa", bg: "rgba(96,165,250,0.12)", icon: Icons.loader, label: "Processing" },
@@ -231,12 +256,15 @@ function PipelineTracker({ job, profile }) {
 
 // ─── Health Dot ───
 function HealthDot({ ok, label }) {
+  const isUnknown = ok === null || ok === undefined;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <div style={{
         width: 7, height: 7, borderRadius: "50%",
-        background: ok ? "#34d399" : "#f87171",
-        boxShadow: ok ? "0 0 8px rgba(52,211,153,0.5)" : "0 0 8px rgba(248,113,113,0.5)",
+        background: isUnknown ? "#64748b" : (ok ? "#34d399" : "#f87171"),
+        boxShadow: isUnknown
+          ? "0 0 8px rgba(100,116,139,0.35)"
+          : (ok ? "0 0 8px rgba(52,211,153,0.5)" : "0 0 8px rgba(248,113,113,0.5)"),
       }} />
       <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{label}</span>
     </div>
@@ -335,7 +363,7 @@ function ProfileCard({ profile, jobCount, activeCount, onClick, onDelete }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
             {profile.stage_count} stage{profile.stage_count !== 1 ? "s" : ""} · {jobCount} job{jobCount !== 1 ? "s" : ""}
-            {profile.syncthing_folder && (
+            {hasOutputSync(profile) && (
               <span style={{ color: "rgba(52,211,153,0.4)" }}> · ↗ synced</span>
             )}
             {profile.priority && profile.priority !== 5 && (
@@ -972,7 +1000,10 @@ function CreateProfileModal({ onClose, onSave }) {
                     <code style={{ color: "#34d399", background: "rgba(52,211,153,0.08)", padding: "2px 6px", borderRadius: 4 }}>
                       {syncthingFolder
                         ? `${syncthingFolders.find(f => f.id === syncthingFolder)?.label || syncthingFolder}${syncthingSubfolder ? `/${syncthingSubfolder}` : ""}`
-                        : `outputs/docs/${syncthingSubfolder || profileId || autoId(name)}/`
+                        : getOutputPathLabel({
+                            profileId: profileId || autoId(name),
+                            syncthingSubfolder,
+                          })
                       }
                     </code>
                   </div>
@@ -1375,7 +1406,7 @@ function ProfileDetail({ profile, jobs, onBack }) {
               </span>
             ) : (
               <code style={{ color: "#a5b4fc", fontSize: 11 }}>
-                outputs/docs/{profile.syncthing_subfolder || profile.id}/
+                {getOutputPathLabel(profile)}
               </code>
             )}
           </div>
@@ -1576,12 +1607,146 @@ function ProfileDetail({ profile, jobs, onBack }) {
   );
 }
 
+// ─── Login Gate ───
+function LoginGate({ onLogin }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    
+    try {
+      // Test the password by making an API call with it as the key
+      const res = await fetch(`${API_BASE}/api/profiles`, {
+        headers: { "X-API-Key": password },
+      });
+      
+      if (res.ok) {
+        sessionStorage.setItem("pipeline_key", password);
+        onLogin(password);
+      } else {
+        setError("Invalid password");
+      }
+    } catch (e) {
+      setError("Cannot reach server");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "#0a0a14",
+      fontFamily: "'DM Sans', system-ui, sans-serif",
+    }}>
+      <div style={{
+        background: "rgba(255,255,255,0.03)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: 20,
+        padding: 40,
+        width: 360,
+        textAlign: "center",
+      }}>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>⚡️</div>
+        <h1 style={{
+          color: "rgba(255,255,255,0.85)",
+          fontSize: 20,
+          fontWeight: 600,
+          margin: "0 0 4px 0",
+        }}>
+          Control Hub
+        </h1>
+        <p style={{
+          color: "rgba(255,255,255,0.3)",
+          fontSize: 13,
+          margin: "0 0 28px 0",
+        }}>
+          Enter your API key to continue
+        </p>
+
+        <div>
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleSubmit(e)}
+            placeholder="API key"
+            autoFocus
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              background: "rgba(255,255,255,0.05)",
+              border: `1px solid ${error ? "rgba(248,113,113,0.4)" : "rgba(255,255,255,0.08)"}`,
+              borderRadius: 12,
+              color: "rgba(255,255,255,0.8)",
+              fontSize: 14,
+              outline: "none",
+              fontFamily: "'DM Sans', system-ui, sans-serif",
+              boxSizing: "border-box",
+              transition: "border-color 0.2s",
+            }}
+          />
+          
+          {error && (
+            <p style={{
+              color: "#f87171",
+              fontSize: 12,
+              margin: "8px 0 0 0",
+            }}>
+              {error}
+            </p>
+          )}
+
+          <button
+            onClick={handleSubmit}
+            disabled={loading || !password}
+            style={{
+              width: "100%",
+              padding: "12px",
+              marginTop: 16,
+              background: loading ? "rgba(255,255,255,0.05)" : "rgba(96,165,250,0.15)",
+              border: "1px solid rgba(96,165,250,0.3)",
+              borderRadius: 12,
+              color: "#60a5fa",
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: loading ? "wait" : "pointer",
+              fontFamily: "'DM Sans', system-ui, sans-serif",
+              transition: "all 0.2s",
+            }}
+          >
+            {loading ? "Checking..." : "Sign In"}
+          </button>
+        </div>
+      </div>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');`}</style>
+    </div>
+  );
+}
+
 // ─── Main App ───
 export default function ControlHub() {
+  const [authenticated, setAuthenticated] = useState(() => {
+    // Check if already logged in this session
+    return !!sessionStorage.getItem("pipeline_key") || !!import.meta.env.VITE_PIPELINE_API_KEY;
+  });
+  
+  if (!authenticated) {
+    return <LoginGate onLogin={(key) => { API_KEY = key; setAuthenticated(true); }} />;
+  }
+
   const [profiles, setProfiles] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [health, setHealth] = useState(null);
   const [ready, setReady] = useState(null);
+  const [ingester, setIngester] = useState(null);
   const [activeView, setActiveView] = useState("dashboard");
   const [selectedProfile, setSelectedProfile] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -1602,37 +1767,44 @@ export default function ControlHub() {
       console.log("Frontend: API_BASE =", API_BASE);
       try {
         console.log("Frontend: Making API calls...");
-        const [p, j, h, r] = await Promise.all([
+        const results = await Promise.allSettled([
           apiFetch("/api/profiles").then(data => {
             console.log("Frontend: Profiles API response:", data?.length, "profiles");
             return data;
-          }).catch(err => {
-            console.error("Frontend: Profiles API error:", err);
-            throw err;
           }),
           apiFetch("/api/jobs?limit=50").then(data => {
             console.log("Frontend: Jobs API response:", data?.jobs?.length, "jobs");
             return data;
-          }).catch(err => {
-            console.error("Frontend: Jobs API error:", err);
-            throw err;
           }),
           apiFetch("/health").then(data => {
             console.log("Frontend: Health API response:", data);
             return data;
-          }).catch(err => {
-            console.error("Frontend: Health API error:", err);
-            throw err;
           }),
           apiFetch("/ready").then(data => {
             console.log("Frontend: Ready API response:", data);
             return data;
-          }).catch(err => {
-            console.error("Frontend: Ready API error:", err);
-            throw err;
+          }),
+          apiFetch("/api/ingester/status").then(data => {
+            console.log("Frontend: Ingester API response:", data);
+            return data;
           }),
         ]);
-        console.log("Frontend: All API calls successful");
+        const [profilesResult, jobsResult, healthResult, readyResult, ingesterResult] = results;
+        const p = profilesResult.status === "fulfilled" ? profilesResult.value : null;
+        const j = jobsResult.status === "fulfilled" ? jobsResult.value : null;
+        const h = healthResult.status === "fulfilled" ? healthResult.value : null;
+        const r = readyResult.status === "fulfilled" ? readyResult.value : null;
+        const i = ingesterResult.status === "fulfilled" ? ingesterResult.value : null;
+        
+        // Log any failures but don't let them break the UI
+        results.forEach((result, idx) => {
+          if (result.status === "rejected") {
+            const endpoints = ["/api/profiles", "/api/jobs", "/health", "/ready", "/api/ingester/status"];
+            console.error(`Frontend: ${endpoints[idx]} failed:`, result.reason);
+          }
+        });
+        
+        console.log("Frontend: API calls completed");
         if (p) {
           console.log("Frontend: Setting profiles:", p.length);
           setProfiles(p);
@@ -1649,6 +1821,10 @@ export default function ControlHub() {
           console.log("Frontend: Setting ready:", r);
           setReady(r);
         }
+        if (i) {
+          console.log("Frontend: Setting ingester:", i);
+          setIngester(i);
+        }
       } catch (err) {
         console.error("Frontend: Failed to load data:", err);
         console.error("Frontend: Error stack:", err.stack);
@@ -1663,7 +1839,8 @@ export default function ControlHub() {
 
     const connectWs = () => {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsKeyParam = API_KEY ? `?key=${encodeURIComponent(API_KEY)}` : '';
+      const wsKey = getApiKey();
+      const wsKeyParam = wsKey ? `?key=${encodeURIComponent(wsKey)}` : '';
       ws = new WebSocket(`${protocol}//${window.location.host}/ws${wsKeyParam}`);
 
       ws.onmessage = (event) => {
@@ -1844,12 +2021,31 @@ export default function ControlHub() {
             }}>
               v2.0
             </span>
+            <button
+              onClick={() => {
+                sessionStorage.removeItem("pipeline_key");
+                window.location.reload();
+              }}
+              style={{
+                background: "none",
+                border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 6,
+                padding: "4px 10px",
+                color: "rgba(255,255,255,0.25)",
+                fontSize: 11,
+                cursor: "pointer",
+                marginLeft: 12,
+              }}
+            >
+              Logout
+            </button>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <HealthDot ok={ready?.checks?.groq} label="Groq" />
             <HealthDot ok={ready?.checks?.deepseek} label="DeepSeek" />
             <HealthDot ok={health?.checks?.database} label="DB" />
+            <HealthDot ok={ingester?.healthy} label={`Ingest${(ingester?.counts?.pending_files ?? 0) > 0 ? `:${ingester.counts.pending_files}` : ""}`} />
             <div style={{ width: 1, height: 16, background: "rgba(255,255,255,0.08)", margin: "0 4px" }} />
             <div style={{
               fontSize: 11, color: health?.status === "healthy" ? "#34d399" : health === null ? "#64748b" : "#f87171",
